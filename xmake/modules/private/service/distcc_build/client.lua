@@ -53,7 +53,7 @@ function distcc_build_client:init()
         self._PROJECTDIR = projectdir
         self._WORKDIR = path.join(project_config.directory(), "distcc_build")
     else
-        raise("we need enter a project directory with xmake.lua first!")
+        raise("we need to enter a project directory with xmake.lua first!")
     end
 
     -- init timeout
@@ -244,15 +244,15 @@ function distcc_build_client:compile(program, argv, opt)
         -- get objectfile from the build cache first
         local cached = false
         local cachekey
-        if build_cache.is_enabled() then
+        if build_cache.is_enabled(opt.target) then
             cachekey = build_cache.cachekey(program, cppinfo, opt.envs)
             local objectfile_cached, objectfile_infofile = build_cache.get(cachekey)
             if objectfile_cached then
                 os.cp(objectfile_cached, cppinfo.objectfile)
-                -- we need update mtime for incremental compilation
+                -- we need to update mtime for incremental compilation
                 -- @see https://github.com/xmake-io/xmake/issues/2620
                 os.touch(cppinfo.objectfile, {mtime = os.time()})
-                -- we need get outdata/errdata to show warnings,
+                -- we need to get outdata/errdata to show warnings,
                 -- @see https://github.com/xmake-io/xmake/issues/2452
                 if objectfile_infofile and os.isfile(objectfile_infofile) then
                     local extrainfo = io.load(objectfile_infofile)
@@ -341,7 +341,7 @@ function distcc_build_client:compile(program, argv, opt)
             else
                 compile(program, cppinfo, opt)
             end
-            if build_cache.is_enabled() then
+            if build_cache.is_enabled(opt.target) then
                 local cachekey = build_cache.cachekey(program, cppinfo, opt.envs)
                 if cachekey then
                     local extrainfo
@@ -526,7 +526,7 @@ function distcc_build_client:_connect_host(host)
         return
     end
 
-    -- we need user authorization?
+    -- Do we need user authorization?
     local user = host.user
     local token = host.token
     if not token and user then

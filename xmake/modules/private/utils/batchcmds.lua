@@ -212,25 +212,21 @@ end
 -- add command: os.runv
 function batchcmds:runv(program, argv, opt)
     table.insert(self:cmds(), {kind = "runv", program = program, argv = argv, opt = opt})
-    self:add_depvalues(program, argv)
 end
 
 -- add command: os.vrunv
 function batchcmds:vrunv(program, argv, opt)
     table.insert(self:cmds(), {kind = "vrunv", program = program, argv = argv, opt = opt})
-    self:add_depvalues(program, argv)
 end
 
 -- add command: os.execv
 function batchcmds:execv(program, argv, opt)
     table.insert(self:cmds(), {kind = "execv", program = program, argv = argv, opt = opt})
-    self:add_depvalues(program, argv)
 end
 
 -- add command: os.vexecv
 function batchcmds:vexecv(program, argv, opt)
     table.insert(self:cmds(), {kind = "vexecv", program = program, argv = argv, opt = opt})
-    self:add_depvalues(program, argv)
 end
 
 -- add command: compiler.compile
@@ -240,7 +236,7 @@ function batchcmds:compile(sourcefiles, objectfile, opt)
     opt = opt or {}
     opt.target = self._TARGET
 
-    -- wrap path for sourcefiles, because we need translate path for project generator
+    -- wrap path for sourcefiles, because we need to translate path for project generator
     if type(sourcefiles) == "table" then
         local sourcefiles_wrap = {}
         for _, sourcefile in ipairs(sourcefiles) do
@@ -257,9 +253,28 @@ function batchcmds:compile(sourcefiles, objectfile, opt)
         sourcekind = language.sourcekind_of(tostring(sourcefiles))
     end
     local compiler_inst = compiler.load(sourcekind, opt)
-    local program, argv = compiler_inst:compargv(sourcefiles, path(objectfile), opt)
+    local _, argv = compiler_inst:compargv(sourcefiles, path(objectfile), opt)
 
-    -- we need translate path for the project generator
+    -- add compilation command and bind run environments of compiler
+    self:mkdir(path.directory(objectfile))
+    self:compilev(argv, table.join({sourcekind = sourcekind, compiler = compiler_inst}, opt))
+end
+
+-- add command: compiler.compilev
+function batchcmds:compilev(argv, opt)
+
+    -- bind target if exists
+    opt = opt or {}
+    opt.target = self._TARGET
+
+    -- load compiler and get compilation command
+    local compiler_inst = opt.compiler
+    if not compiler_inst then
+        local sourcekind = opt.sourcekind
+        compiler_inst = compiler.load(sourcekind, opt)
+    end
+
+    -- we need to translate path for the project generator
     for idx, item in ipairs(argv) do
         if type(item) == "string" then
             if item:startswith("-I") then
@@ -273,8 +288,7 @@ function batchcmds:compile(sourcefiles, objectfile, opt)
     end
 
     -- add compilation command and bind run environments of compiler
-    self:mkdir(path.directory(objectfile))
-    self:vrunv(program, argv, {envs = table.join(compiler_inst:runenvs(), opt.envs)})
+    self:vrunv(compiler_inst:program(), argv, {envs = table.join(compiler_inst:runenvs(), opt.envs)})
 end
 
 -- add command: linker.link
@@ -285,7 +299,7 @@ function batchcmds:link(objectfiles, targetfile, opt)
     opt = opt or {}
     opt.target = target
 
-    -- wrap path for objectfiles, because we need translate path for project generator
+    -- wrap path for objectfiles, because we need to translate path for project generator
     local objectfiles_wrap = {}
     for _, objectfile in ipairs(objectfiles) do
         table.insert(objectfiles_wrap, path(objectfile))
@@ -296,7 +310,7 @@ function batchcmds:link(objectfiles, targetfile, opt)
     local linker_inst = target and target:linker() or linker.load(opt.targetkind, opt.sourcekinds, opt)
     local program, argv = linker_inst:linkargv(objectfiles, path(targetfile), opt)
 
-    -- we need translate path for the project generator
+    -- we need to translate path for the project generator
     for idx, item in ipairs(argv) do
         if type(item) == "string" then
             if item:startswith("-L") then

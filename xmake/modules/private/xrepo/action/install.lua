@@ -54,7 +54,18 @@ function menu_options()
         {nil, "vs_sdkver",     "kv", nil, "The Windows SDK Version of Visual Studio"
                                         , "  e.g. --vs_sdkver=10.0.15063.0"  },
         {category = "Android NDK Configuration"                              },
-        {nil, "ndk",           "kv", nil, "Set the android NDK directory."   },
+        {nil, "ndk",           "kv", nil, "The NDK directory"                },
+        {nil, "ndk_sdkver",    "kv", nil, "The SDK Version for NDK (default: auto)" },
+        {nil, "android_sdk",   "kv", nil, "The Android SDK Directory"        },
+        {nil, "build_toolver", "kv", nil, "The Build Tool Version of Android SDK" },
+        {nil, "ndk_stdcxx",    "kv", nil, "Use stdc++ library for NDK"        },
+        {nil, "ndk_cxxstl",    "kv", nil, "The stdc++ stl library for NDK",
+                                          "    - c++_static",
+                                          "    - c++_shared",
+                                          "    - gnustl_static",
+                                          "    - gnustl_shared",
+                                          "    - stlport_shared",
+                                          "    - stlport_static"             },
         {category = "Cross Compilation Configuration"                        },
         {nil, "sdk",           "kv", nil, "Set the SDK directory of cross toolchain." },
         {nil, "toolchain",     "kv", nil, "Set the toolchain name."          },
@@ -79,7 +90,8 @@ function menu_options()
                                        "    - xrepo install -p iphoneos -a arm64 \"zlib >=1.2.0\"",
                                        "    - xrepo install -p android [--ndk=/xxx] -m debug \"pcre2 10.x\"",
                                        "    - xrepo install -p mingw [--mingw=/xxx] -k shared zlib",
-                                       "    - xrepo install conan::zlib/1.2.11 vcpkg::zlib"}
+                                       "    - xrepo install conan::zlib/1.2.11 vcpkg::zlib",
+                                        values = function (complete, opt) return import("private.xrepo.quick_search.completion")(complete, opt) end}
     }
 
     -- show menu options
@@ -145,11 +157,8 @@ function _install_packages(packages)
 
     -- do configure first
     local config_argv = {"f", "-c", "--require=n"}
-    if option.get("verbose") then
-        table.insert(config_argv, "-v")
-    end
     if option.get("diagnosis") then
-        table.insert(config_argv, "-D")
+        table.insert(config_argv, "-vD")
     end
     if option.get("plat") then
         table.insert(config_argv, "-p")
@@ -172,6 +181,21 @@ function _install_packages(packages)
     -- for android
     if option.get("ndk") then
         table.insert(config_argv, "--ndk=" .. option.get("ndk"))
+    end
+    if option.get("ndk_sdkver") then
+        table.insert(config_argv, "--ndk_sdkver=" .. option.get("ndk_sdkver"))
+    end
+    if option.get("android_sdk") then
+        table.insert(config_argv, "--android_sdk=" .. option.get("android_sdk"))
+    end
+    if option.get("build_toolver") then
+        table.insert(config_argv, "--build_toolver=" .. option.get("build_toolver"))
+    end
+    if option.get("ndk_stdcxx") then
+        table.insert(config_argv, "--ndk_stdcxx=" .. option.get("ndk_stdcxx"))
+    end
+    if option.get("ndk_cxxstl") then
+        table.insert(config_argv, "--ndk_cxxstl=" .. option.get("ndk_cxxstl"))
     end
     -- for cross toolchain
     if option.get("sdk") then
@@ -250,9 +274,9 @@ function _install_packages(packages)
     if mode == "debug" then
         extra.debug = true
     end
-    if kind == "shared" then
+    if kind then
         extra.configs = extra.configs or {}
-        extra.configs.shared = true
+        extra.configs.shared = kind == "shared"
     end
     local configs = option.get("configs")
     if configs then
@@ -266,7 +290,7 @@ function _install_packages(packages)
         end
     end
     if not packagefile then
-        -- avoid to override extra configs in add_requires/xmake.lua
+        -- avoid overriding extra configs in add_requires/xmake.lua
         if extra then
             local extra_str = string.serialize(extra, {indent = false, strip = true})
             table.insert(require_argv, "--extra=" .. extra_str)

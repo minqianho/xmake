@@ -22,6 +22,7 @@
 import("core.base.option")
 import("core.project.config")
 import("detect.sdks.find_xcode")
+import("private.utils.executable_path")
 
 -- main entry
 function main(toolchain)
@@ -71,6 +72,24 @@ function main(toolchain)
         end
     end
 
+    -- get xcode bin directory
+    local cross
+    if toolchain:is_plat("macosx") then
+        cross = "xcrun -sdk macosx "
+    elseif toolchain:is_plat("iphoneos") then
+        cross = simulator and "xcrun -sdk iphonesimulator " or "xcrun -sdk iphoneos "
+    elseif toolchain:is_plat("watchos") then
+        cross = simulator and "xcrun -sdk watchsimulator " or "xcrun -sdk watchos "
+    elseif toolchain:is_plat("appletvos") then
+        cross = simulator and "xcrun -sdk appletvsimulator " or "xcrun -sdk appletvos "
+    else
+        raise("unknown platform for xcode!")
+    end
+    local xc_clang = executable_path(cross .. "clang")
+    if xc_clang then
+        toolchain:config_set("bindir", path.directory(xc_clang))
+    end
+
     -- save xcode sysroot directory
     local xcode_sysroot
     if xcode.sdkdir and xcode_sdkver then
@@ -86,10 +105,18 @@ function main(toolchain)
             local platname = simulator and "AppleTVSimulator" or "AppleTVOS"
             xcode_sysroot  = format("%s/Contents/Developer/Platforms/%s.platform/Developer/SDKs/%s%s.sdk", xcode.sdkdir, platname, platname, xcode_sdkver)
         end
+    else
+        -- maybe it is from CommandLineTools, e.g. /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk
+        -- @see https://github.com/xmake-io/xmake/issues/3686
+        local sdkpath = try { function () return os.iorun(cross .. "--show-sdk-path") end }
+        if sdkpath then
+            xcode_sysroot = sdkpath:trim()
+        end
     end
     if xcode_sysroot then
         toolchain:config_set("xcode_sysroot", xcode_sysroot)
     end
+    toolchain:config_set("simulator", simulator)
 
     -- save target minver
     --

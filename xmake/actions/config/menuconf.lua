@@ -95,6 +95,7 @@ function app:_filter_option(name)
     ,   menu        = true
     ,   import      = true
     ,   export      = true
+    ,   check       = true
     }
     return not options[name] and not project.option(name)
 end
@@ -359,7 +360,7 @@ function app:_save_configs(configs)
     end
 end
 
--- configs have been changed?
+-- Have configs been changed?
 function app:_configs_changed()
     return self._CONFIGS_CHANGED
 end

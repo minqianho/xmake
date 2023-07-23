@@ -105,7 +105,7 @@ function _load_vcvarsall(vcvarsall, vsver, arch, opt)
     local genvcvars_bat = os.tmpfile() .. "_genvcvars.bat"
     local file = io.open(genvcvars_bat, "w")
     file:print("@echo off")
-    -- @note we need get utf8 output from cmd.exe
+    -- @note we need to get utf8 output from cmd.exe
     -- because some %PATH% and other envs maybe contains unicode characters
 	if winos.version():gt("winxp") then
     	file:print("chcp 65001")
@@ -286,7 +286,7 @@ function _find_vstudio(opt)
             table.insert(paths, format("$(env %s)\\..\\..\\VC", vsenvs[version]))
         end
         if vswhere_VCAuxiliaryBuildDir and os.isdir(vswhere_VCAuxiliaryBuildDir) then
-            table.insert(paths, vswhere_VCAuxiliaryBuildDir)
+            table.insert(paths, 1, vswhere_VCAuxiliaryBuildDir)
         end
 
         -- find vcvarsall.bat, vcvars32.bat for vs7.1
@@ -312,6 +312,9 @@ function _find_vstudio(opt)
                 end
                 table.insert(paths, path.join(logical_drive, "Program Files", "Microsoft Visual Studio", vsvers[version], "*", "VC", "Auxiliary", "Build"))
                 table.insert(paths, path.join(logical_drive, "Program Files", "Microsoft Visual Studio " .. version, "VC"))
+                if version == "6.0" then
+                    table.insert(paths, path.join(logical_drive, "Program Files", "Microsoft Visual Studio", "VC98", "Bin"))
+                end
             end
             vcvarsall = find_file("vcvarsall.bat", paths) or find_file("vcvars32.bat", paths)
         end
@@ -340,6 +343,34 @@ function _find_vstudio(opt)
     return results
 end
 
+-- get last mtime of msvc
+-- @see https://github.com/xmake-io/xmake/issues/3652
+function _get_last_mtime_of_msvc(msvc)
+    local mtime = -1
+    for arch, envs in pairs(msvc.vcvarsall) do
+        if envs.PATH then
+            local pathenv = path.splitenv(envs.PATH)
+            for _, dir in ipairs(pathenv) do
+                local cl = path.join(dir, "cl.exe")
+                if os.isfile(cl) then
+                    local t = os.mtime(cl)
+                    if t > mtime then
+                        mtime = t
+                    end
+                end
+            end
+        end
+        local winsdk = envs.WindowsSdkDir
+        if winsdk and os.isdir(winsdk) then
+            local t = os.mtime(winsdk)
+            if t > mtime then
+                mtime = t
+            end
+        end
+    end
+    return mtime
+end
+
 -- get last mtime of vstudio
 function _get_last_mtime(vstudio)
     local mtime = -1
@@ -347,6 +378,10 @@ function _get_last_mtime(vstudio)
         local vcvarsall_bat = msvc.vcvarsall_bat
         if vcvarsall_bat and os.isfile(vcvarsall_bat) then
             local t = os.mtime(vcvarsall_bat)
+            if t > mtime then
+                mtime = t
+            end
+            t = _get_last_mtime_of_msvc(msvc)
             if t > mtime then
                 mtime = t
             end

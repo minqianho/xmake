@@ -35,7 +35,7 @@ function _normailize_dep(dep, projectdir)
     if dep:startswith(projectdir) then
         return path.relative(dep, projectdir)
     else
-        -- we need also check header files outside project
+        -- we also need to check header files outside project
         -- https://github.com/xmake-io/xmake/issues/1154
         return dep
     end
@@ -54,7 +54,7 @@ end
 --  src/tbox/libc/string/../../prefix/../config.h \
 --  build/iphoneos/x86_64/release/tbox.config.h \
 --
--- with c++ modules:
+-- with c++ modules (gcc):
 -- build/.objs/dependence/linux/x86_64/release/src/foo.mpp.o: src/foo.mpp\
 -- build/.objs/dependence/linux/x86_64/release/src/foo.mpp.o  gcm.cache/foo.gcm: bar.c++m cat.c++m\
 -- foo.c++m: gcm.cache/foo.gcm\
@@ -62,7 +62,7 @@ end
 -- gcm.cache/foo.gcm:|  build/.objs/dependence/linux/x86_64/release/src/foo.mpp.o\
 -- CXX_IMPORTS += bar.c++m cat.c++m\
 --
-function main(depsdata)
+function main(depsdata, opt)
 
     -- we assume there is only one valid line
     local block = 0
@@ -72,7 +72,7 @@ function main(depsdata)
     local plain = {plain = true}
     line = line:replace("\\ ", space_placeholder, plain)
     for _, includefile in ipairs(line:split(' ', plain)) do -- it will trim all internal spaces without `{strict = true}`
-        -- some gcc toolchains will some invalid paths (e.g. `d\:\xxx`), we need fix it
+        -- some gcc toolchains will some invalid paths (e.g. `d\:\xxx`), we need to fix it
         -- https://github.com/xmake-io/xmake/issues/1196
         if is_host("windows") and includefile:match("^%w\\:") then
             includefile = includefile:replace("\\:", ":", plain)
@@ -85,11 +85,33 @@ function main(depsdata)
             end
         else
             includefile = includefile:replace(space_placeholder, ' ', plain)
-            includefile = includefile:split("\n", {plain = true})[1]
+            includefile = includefile:split("\n", plain)[1]
             if #includefile > 0 then
                 includefile = _normailize_dep(includefile, projectdir)
                 if includefile then
                     results:insert(includefile)
+                end
+            end
+        end
+    end
+    -- with c++ modules (gcc):
+    -- CXX_IMPORTS += bar.c++m cat.c++m\
+    --
+    -- @see https://github.com/xmake-io/xmake/issues/3000
+    opt = opt or {}
+    if opt.modules_cachedir and line:find("CXX_IMPORTS += ", 1, true) then
+        local modulefiles = line:split("CXX_IMPORTS += ", plain)[2]
+        if modulefiles then
+            for _, modulefile in ipairs(modulefiles:split(' ', plain)) do
+                modulefile = modulefile:replace(".c++m", ".gcm", plain)
+                if #modulefile > 0 then
+                    if not path.is_absolute(modulefile) then
+                        modulefile = path.absolute(modulefile, opt.modules_cachedir)
+                    end
+                    modulefile = _normailize_dep(modulefile, projectdir)
+                    if modulefile then
+                        results:insert(modulefile)
+                    end
                 end
             end
         end

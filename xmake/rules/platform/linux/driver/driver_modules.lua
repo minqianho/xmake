@@ -53,7 +53,7 @@ end
 
 -- get cflags from make
 function _get_cflags_from_make(target, sdkdir)
-    local key = target:plat() .. target:arch()
+    local key = sdkdir .. target:arch()
     local cflags = memcache.get2("linux.driver", key, "cflags")
     local ldflags_o = memcache.get2("linux.driver", key, "ldflags_o")
     local ldflags_ko = memcache.get2("linux.driver", key, "ldflags_ko")
@@ -115,9 +115,17 @@ module_exit(hello_exit);
                     local include_cflag = false
                     for _, cflag in ipairs(line:split("%s+")) do
                         local has_cflag = false
-                        if cflag:startswith("-f") or cflag:startswith("-m")
-                        or (cflag:startswith("-W") and not cflag:startswith("-Wp,-MMD,") and not cflag:startswith("-Wp,-MD,"))
-                        or (cflag:startswith("-D") and not cflag:find("KBUILD_MODNAME=") and not cflag:find("KBUILD_BASENAME=")) then
+                        if cflag:startswith("-fplugin=") then
+                            -- @see https://github.com/xmake-io/xmake/issues/3279
+                            local plugindir = cflag:sub(10)
+                            if not path.is_absolute(plugindir) then
+                                plugindir = path.absolute(plugindir, sdkdir)
+                            end
+                            cflag = "-fplugin=" .. plugindir
+                            has_cflag = true
+                        elseif cflag:startswith("-f") or cflag:startswith("-m")
+                            or (cflag:startswith("-W") and not cflag:startswith("-Wp,-MMD,") and not cflag:startswith("-Wp,-MD,"))
+                            or (cflag:startswith("-D") and not cflag:find("KBUILD_MODNAME=") and not cflag:find("KBUILD_BASENAME=")) then
                             has_cflag = true
                             local macro = cflag:match("%-D\"(.+)\"") -- -D"KBUILD_XXX=xxx"
                             if macro then
@@ -179,12 +187,14 @@ module_exit(hello_exit);
         end
         os.tryrm(tmpdir)
         memcache.set2("linux.driver", key, "cflags", cflags or false)
+        memcache.set2("linux.driver", key, "ldflags_o", ldflags_o or false)
+        memcache.set2("linux.driver", key, "ldflags_ko", ldflags_ko or false)
     end
     return cflags or nil, ldflags_o or nil, ldflags_ko or nil
 end
 
 function load(target)
-    -- we need only need binary kind, because we will rewrite on_link
+    -- we only need binary kind, because we will rewrite on_link
     target:set("kind", "binary")
     target:set("extension", ".ko")
 end
@@ -203,7 +213,7 @@ function config(target)
         assert(not target:rule(rulename), "target(%s) is linux driver module, it need not rule(%s)!", target:name(), rulename)
     end
 
-    -- we need disable includedirs from add_packages("linux-headers")
+    -- we need to disable includedirs from add_packages("linux-headers")
     if target:pkg("linux-headers") then
         target:pkg("linux-headers"):set("includedirs", nil)
         target:pkg("linux-headers"):set("sysincludedirs", nil)
@@ -259,10 +269,10 @@ function link(target, opt)
 
         -- generate target.mod
         local targetfile_mod = targetfile_o:gsub("%.o$", ".mod")
-        io.writefile(targetfile_mod, table.concat(objectfiles, " ") .. "\n\n")
+        io.writefile(targetfile_mod, table.concat(objectfiles, "\n") .. "\n\n")
 
         -- generate .sourcename.o.cmd
-        -- we need only touch an empty file, otherwise modpost command will raise error.
+        -- we only need to touch an empty file, otherwise modpost command will raise error.
         for _, objectfile in ipairs(objectfiles) do
             local objectdir = path.directory(objectfile)
             local objectname = path.filename(objectfile)
@@ -298,4 +308,12 @@ function link(target, opt)
         os.vrunv(ld, argv)
 
     end, {dependfile = dependfile, lastmtime = os.mtime(target:targetfile()), files = objectfiles})
+end
+
+function install(target)
+    os.vrunv("insmod", {target:targetfile()})
+end
+
+function uninstall(target)
+    os.vrunv("rmmod", {target:targetfile()})
 end

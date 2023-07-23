@@ -23,15 +23,23 @@ import("core.base.option")
 import("core.project.config")
 import("core.tool.toolchain")
 import("lib.detect.find_path")
+import("detect.sdks.find_qt")
+
+-- get install directory
+function _get_installdir(target)
+    local installdir = assert(target:installdir(), "please use `xmake install -o installdir` or `set_installdir` to set install directory on windows.")
+    return installdir
+end
 
 -- install application package for windows
 function main(target, opt)
 
     local targetfile = target:targetfile()
-    local installfile = path.join(target:installdir(), "bin", path.filename(targetfile))
+    local installdir = _get_installdir(target)
+    local installfile = path.join(installdir, "bin", path.filename(targetfile))
 
     -- get qt sdk
-    local qt = target:data("qt")
+    local qt = assert(find_qt(), "Qt SDK not found!")
 
     -- get windeployqt
     local windeployqt = path.join(qt.bindir, "windeployqt.exe")

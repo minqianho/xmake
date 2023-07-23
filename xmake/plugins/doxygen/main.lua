@@ -22,23 +22,16 @@
 import("core.base.option")
 import("core.project.config")
 import("core.project.project")
-import("detect.tools.find_doxygen")
+import("lib.detect.find_tool")
+import("private.action.require.impl.packagenv")
+import("private.action.require.impl.install_packages")
 
--- main
-function main()
-
-    -- find doxygen
-    local doxygen = find_doxygen()
-    assert(doxygen, "doxygen not found!")
-
-    -- generate doxyfile first
-    local doxyfile = path.join(os.tmpdir(), "doxyfile")
+-- generate doxyfile
+function _generate_doxyfile(doxygen)
 
     -- generate the default doxyfile
-    os.run("%s -g %s", doxygen, doxyfile)
-
-    -- load configure
-    config.load()
+    local doxyfile = path.join(project.directory(), "doxyfile")
+    os.vrunv(doxygen.program, {"-g", doxyfile})
 
     -- enable recursive
     --
@@ -59,23 +52,10 @@ function main()
     --
     -- OUTPUT_DIRECTORY =
     --
-    local outputdir = option.get("outputdir") or config.get("buildir") or "build"
+    local outputdir = option.get("outputdir") or config.buildir()
     if outputdir then
-
-        -- update the doxyfile
         io.gsub(doxyfile, "OUTPUT_DIRECTORY%s-=.-\n", format("OUTPUT_DIRECTORY = %s\n", outputdir))
-
-        -- ensure the output directory
         os.mkdir(outputdir)
-    end
-
-    -- set the project version
-    --
-    -- PROJECT_NUMBER =
-    --
-    local version = project.version()
-    if version then
-        io.gsub(doxyfile, "PROJECT_NUMBER%s-=.-\n", format("PROJECT_NUMBER = %s\n", version))
     end
 
     -- set the project name
@@ -86,27 +66,57 @@ function main()
     if name then
         io.gsub(doxyfile, "PROJECT_NAME%s-=.-\n", format("PROJECT_NAME = %s\n", name))
     end
+    return doxyfile
+end
 
-    -- check
-    assert(os.isfile(doxyfile), "%s not found!", doxyfile)
+function main()
 
-    -- enter the project directory
-    os.cd(project.directory())
+    -- load configuration
+    config.load()
 
-    -- trace
-    cprint("generating ..${beer}")
+    -- enter the environments of doxygen
+    local oldenvs = packagenv.enter("doxygen")
 
-    -- generate document
-    if option.get("verbose") then
-        os.exec("%s %s", doxygen, doxyfile)
-    else
-        os.run("%s %s", doxygen, doxyfile)
+    -- find doxygen
+    local packages = {}
+    local doxygen = find_tool("doxygen")
+    if not doxygen then
+        table.join2(packages, install_packages("doxygen"))
     end
 
-    -- leave the project directory
-    os.cd("-")
+    -- enter the environments of installed packages
+    for _, instance in ipairs(packages) do
+        instance:envs_enter()
+    end
 
-    -- trace
+    -- we need to force detect and flush detect cache after loading all environments
+    if not doxygen then
+        doxygen = find_tool("doxygen", {force = true})
+    end
+    assert(doxygen, "doxygen not found!")
+
+    -- get doxyfile first
+    local doxyfile = "doxyfile"
+    if not os.isfile(doxyfile) then
+        doxyfile = _generate_doxyfile(doxygen)
+    end
+    assert(os.isfile(doxyfile), "%s not found!", doxyfile)
+
+    -- set the project version
+    --
+    -- PROJECT_NUMBER =
+    --
+    local version = project.version()
+    if version then
+        io.gsub(doxyfile, "PROJECT_NUMBER%s-=.-\n", format("PROJECT_NUMBER = %s\n", version))
+    end
+
+    -- generate document
+    cprint("generating ..${beer}")
+    os.vrunv(doxygen.program, {doxyfile}, {curdir = project.directory()})
+
+    -- done
     cprint("${bright green}result: ${default green}%s/html/index.html", outputdir)
     cprint("${color.success}doxygen ok!")
+    os.setenvs(oldenvs)
 end

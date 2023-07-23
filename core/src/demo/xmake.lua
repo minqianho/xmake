@@ -11,32 +11,34 @@ target("demo")
     -- make as a binary
     set_kind("binary")
 
-    -- add defines
+    -- add definitions
     add_defines("__tb_prefix__=\"xmake\"")
 
     -- add includes directory
     add_includedirs("$(projectdir)", "$(projectdir)/src")
 
-    -- add the common source files
+    -- add common source files
     add_files("**.c")
 
-    -- add the resource files (it will be enabled after publishing new version)
+    -- add resource files (it will be enabled after publishing new version)
     if is_plat("windows") then
         add_files("*.rc")
     end
 
     -- add links
     if is_plat("windows") then
-        add_links("ws2_32", "advapi32", "shell32")
+        add_syslinks("ws2_32", "advapi32", "shell32")
         add_ldflags("/export:malloc", "/export:free", "/export:memmove")
     elseif is_plat("android") then
-        add_links("m", "c")
-    elseif is_plat("macosx") then
+        add_syslinks("m", "c")
+    elseif is_plat("macosx") and is_config("runtime", "luajit") then
         add_ldflags("-all_load", "-pagezero_size 10000", "-image_base 100000000")
     elseif is_plat("mingw") then
         add_ldflags("-static-libgcc", {force = true})
+    elseif is_plat("haiku") then
+        add_syslinks("pthread", "network", "m", "c")
     else
-        add_links("pthread", "dl", "m", "c")
+        add_syslinks("pthread", "dl", "m", "c")
     end
 
     -- enable xp compatibility mode

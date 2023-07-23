@@ -28,6 +28,7 @@ local option      = require("base/winos")
 local table       = require("base/table")
 local utils       = require("base/utils")
 local option      = require("base/option")
+local profiler    = require("base/profiler")
 local project     = require("project/project")
 local detectcache = require("cache/detectcache")
 local sandbox     = require("sandbox/sandbox")
@@ -61,6 +62,8 @@ function sandbox_lib_detect_find_program._do_check(program, opt)
     local errors = nil
     if type(opt.check) == "string" then
         ok, errors = os.runv(program, {opt.check}, {envs = opt.envs})
+    elseif type(opt.check) == "table" then
+        ok, errors = os.runv(program, opt.check, {envs = opt.envs})
     else
         ok, errors = sandbox.load(opt.check, program)
     end
@@ -81,7 +84,7 @@ function sandbox_lib_detect_find_program._check(program, opt)
         end
     elseif os.subhost() == "msys" and os.isfile(program) and os.filesize(program) < 256 then
         -- only a sh script on msys2? e.g. c:/msys64/usr/bin/7z
-        -- we need use sh to wrap it, otherwise os.exec cannot run it
+        -- we need to use sh to wrap it, otherwise os.exec cannot run it
         program = "sh " .. program
         findname = program
     end
@@ -175,13 +178,18 @@ function sandbox_lib_detect_find_program._find(name, paths, opt)
 
     -- attempt to find it from the given directories
     local program_path = sandbox_lib_detect_find_program._find_from_paths(name, paths, opt)
-    if program_path then
+    if program_path and opt.system ~= false then
         return program_path
     end
 
     -- attempt to find it from the xmake packages
-    if opt.require_version and opt.buildhash then
+    if opt.require_version and opt.buildhash and opt.system ~= true then
         return sandbox_lib_detect_find_program._find_from_packages(name, opt)
+    end
+
+    -- we will not continue to find system program
+    if opt.system == false then
+        return
     end
 
     -- attempt to find it from regists
@@ -219,7 +227,7 @@ function sandbox_lib_detect_find_program._find(name, paths, opt)
     if envpaths then
         table.join2(syspaths, path.splitenv(envpaths))
     end]]
-    if os.host() ~= "windows" then
+    if os.host() ~= "windows" or os.is_subhost("msys", "cygwin") then
         table.insert(syspaths, "/usr/local/bin")
         table.insert(syspaths, "/usr/bin")
     end
@@ -247,6 +255,7 @@ end
 --                    - opt.paths     the program paths (e.g. dirs, paths, winreg paths, script paths)
 --                    - opt.check     the check script or command
 --                    - opt.norun     do not attempt to run program to check program fastly
+--                    - opt.system    true: only find it from system, false: only find it from xmake/packages
 --
 -- @return          the program name or path
 --
@@ -301,7 +310,9 @@ function sandbox_lib_detect_find_program.main(name, opt)
 
     -- find executable program
     checking = coroutine_running and name or nil
+    profiler:enter("find_program", name)
     result = sandbox_lib_detect_find_program._find(name, paths, opt)
+    profiler:leave("find_program", name)
     checking = nil
 
     -- cache result

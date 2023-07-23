@@ -29,7 +29,7 @@ import("privilege.sudo")
 import("install")
 
 -- check targets
-function _check_targets(targetname)
+function _check_targets(targetname, group_pattern)
 
     -- get targets
     local targets = {}
@@ -62,11 +62,13 @@ function _check_targets(targetname)
     end
 end
 
--- main
 function main()
 
-    -- local config first
+    -- load config first
     config.load()
+
+    -- load targets
+    project.load_targets()
 
     -- check targets first
     local targetname
@@ -104,7 +106,9 @@ function main()
 
                     -- release privilege
                     privilege.store()
-                    if ok then return end
+                    if ok then
+                        return
+                    end
                 end
 
                 -- continue to install with administrator permission?
@@ -116,8 +120,11 @@ function main()
                     cprint("${color.success}install ok!")
                     ok = true
                 end
-                if not ok and os.syserror() == os.SYSERR_NOT_PERM then
-                    wprint("please pass the --admin parameter to `xmake install` to request administrator permissions!")
+                if not ok then
+                    local syserror = os.syserror()
+                    if syserror == os.SYSERR_NOT_PERM or syserror == os.SYSERR_NOT_ACCESS then
+                        wprint("please pass the --admin parameter to `xmake install` to request administrator permissions!")
+                    end
                 end
                 assert(ok, "install failed, %s", errors or "unknown reason")
             end

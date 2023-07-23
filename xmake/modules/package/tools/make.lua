@@ -69,7 +69,7 @@ function buildenvs(package)
     end
     local ACLOCAL_PATH = {}
     local PKG_CONFIG_PATH = {}
-    for _, dep in ipairs(package:orderdeps()) do
+    for _, dep in ipairs(package:librarydeps()) do
         local pkgconfig = path.join(dep:installdir(), "lib", "pkgconfig")
         if os.isdir(pkgconfig) then
             table.insert(PKG_CONFIG_PATH, pkgconfig)
@@ -108,7 +108,7 @@ function make(package, argv, opt)
         end
     end
     assert(program, "make not found!")
-    os.vrunv(program, argv, {envs = runenvs, curdir = opt.curdir})
+    os.vrunv(program, argv or {}, {envs = runenvs, curdir = opt.curdir})
 end
 
 -- build package
@@ -122,6 +122,7 @@ function build(package, configs, opt)
     local argv = {"-j" .. njob}
     if option.get("verbose") then
         table.insert(argv, "VERBOSE=1")
+        table.insert(argv, "V=1")
     end
     for name, value in pairs(configs) do
         value = tostring(value):trim()
@@ -149,6 +150,7 @@ function install(package, configs, opt)
     local argv = {"install"}
     if option.get("verbose") then
         table.insert(argv, "VERBOSE=1")
+        table.insert(argv, "V=1")
     end
     make(package, argv, opt)
 end

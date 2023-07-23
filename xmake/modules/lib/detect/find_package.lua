@@ -37,7 +37,7 @@ function _concat_packages(a, b)
     for k, v in pairs(result) do
         if k == "links" then
             if type(v) == "table" and #v > 1 then
-                -- we need ensure link orders when removing repeat values
+                -- we need to ensure link orders when removing repeat values
                 v = table.reverse_unique(v)
             end
         else
@@ -112,6 +112,11 @@ function main(name, opt)
         if result and result.includedirs and opt.external then
             result.sysincludedirs = result.includedirs
             result.includedirs = nil
+            local components_base = result.components and result.components.__base
+            if components_base then
+                components_base.sysincludedirs = components_base.includedirs
+                components_base.includedirs = nil
+            end
         end
 
         -- cache result

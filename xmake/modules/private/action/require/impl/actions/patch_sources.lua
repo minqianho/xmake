@@ -20,6 +20,7 @@
 
 -- imports
 import("core.base.option")
+import("core.base.global")
 import("net.http")
 import("net.proxy")
 import("devel.git")
@@ -29,7 +30,7 @@ function _check_sha256(patch_hash, patch_file)
     local ok = (patch_hash == hash.sha256(patch_file))
     if not ok and is_host("windows") then
         -- `git pull` maybe will replace lf to crlf in the patch text automatically on windows.
-        -- so we need attempt to fix this sha256
+        -- so we need to attempt to fix this sha256
         --
         -- @see
         -- https://github.com/xmake-io/xmake-repo/pull/67
@@ -63,7 +64,7 @@ function _patch(package, patch_url, patch_hash)
 
     -- the package file have been downloaded?
     local cached = true
-    if option.get("force") or not os.isfile(patch_file) or not _check_sha256(patch_hash, patch_file) then
+    if not os.isfile(patch_file) or not _check_sha256(patch_hash, patch_file) then
 
         -- no cached
         cached = false
@@ -73,7 +74,9 @@ function _patch(package, patch_url, patch_hash)
 
         -- download the patch file
         if patch_url:find(string.ipattern("https-://")) or patch_url:find(string.ipattern("ftps-://")) then
-            http.download(patch_url, patch_file)
+            http.download(patch_url, patch_file, {
+                insecure = global.get("insecure-ssl"),
+                headers = package:policy("package.download.http_headers")})
         else
             -- copy the patch file
             if os.isfile(patch_url) then
@@ -101,7 +104,7 @@ end
 -- patch the given package
 function main(package)
 
-    -- we need not patch it if we use the precompiled artifacts to install package
+    -- we don't need to patch it if we use the precompiled artifacts to install package
     if package:is_precompiled() then
         return
     end

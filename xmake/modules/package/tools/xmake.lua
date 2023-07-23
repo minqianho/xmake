@@ -20,10 +20,12 @@
 
 -- imports
 import("core.base.option")
+import("core.base.global")
 import("core.tool.toolchain")
 import("core.project.project")
 import("core.package.repository")
 import("private.action.require.impl.package", {alias = "require_package"})
+import("private.utils.toolchain", {alias = "toolchain_utils"})
 
 -- get config from toolchains
 function _get_config_from_toolchains(package, name)
@@ -35,8 +37,161 @@ function _get_config_from_toolchains(package, name)
     end
 end
 
+-- is the toolchain compatible with the host?
+function _is_toolchain_compatible_with_host(package)
+    for _, name in ipairs(package:config("toolchains")) do
+        if toolchain_utils.is_compatible_with_host(name) then
+            return true
+        end
+    end
+end
+
+-- get configs for qt
+function _get_configs_for_qt(package, configs, opt)
+    local names = {"qt", "qt_sdkver"}
+    for _, name in ipairs(names) do
+        local value = get_config(name)
+        if value ~= nil then
+            table.insert(configs, "--" .. name .. "=" .. tostring(value))
+        end
+    end
+end
+
+-- get configs for vcpkg
+function _get_configs_for_vcpkg(package, configs, opt)
+    local names = {"vcpkg"}
+    for _, name in ipairs(names) do
+        local value = get_config(name)
+        if value ~= nil then
+            table.insert(configs, "--" .. name .. "=" .. tostring(value))
+        end
+    end
+end
+
+-- get configs for windows
+function _get_configs_for_windows(package, configs, opt)
+    local names = {"vs", "vs_toolset"}
+    for _, name in ipairs(names) do
+        local value = get_config(name)
+        if value ~= nil then
+            table.insert(configs, "--" .. name .. "=" .. tostring(value))
+        end
+    end
+    -- pass vs_runtime from package configs
+    local vs_runtime = package:config("vs_runtime")
+    if vs_runtime then
+        table.insert(configs, "--vs_runtime=" .. vs_runtime)
+    end
+    _get_configs_for_qt(package, configs, opt)
+    _get_configs_for_vcpkg(package, configs, opt)
+
+    -- we can switch some toolchains, e.g. llvm/clang
+    if package:config("toolchains") and _is_toolchain_compatible_with_host(package) then
+        _get_configs_for_host_toolchain(package, configs, opt)
+    end
+end
+
+-- get configs for appleos
+function _get_configs_for_appleos(package, configs, opt)
+    local appledev = package:config("appledev")
+    if appledev then
+        table.insert(configs, "--appledev=" .. appledev)
+    end
+    local target_minver = get_config("target_minver")
+    if target_minver then
+        table.insert(configs, "--target_minver=" .. target_minver)
+    end
+    _get_configs_for_qt(package, configs, opt)
+    _get_configs_for_vcpkg(package, configs, opt)
+end
+
+-- get configs for android
+function _get_configs_for_android(package, configs, opt)
+    local names = {"ndk", "ndk_sdkver", "ndk_stdcxx", "ndk_cxxstl"}
+    for _, name in ipairs(names) do
+        local value = get_config(name)
+        if value ~= nil then
+            table.insert(configs, "--" .. name .. "=" .. tostring(value))
+        end
+    end
+    _get_configs_for_qt(package, configs, opt)
+    _get_configs_for_vcpkg(package, configs, opt)
+end
+
+-- get configs for mingw
+function _get_configs_for_mingw(package, configs, opt)
+    local names = {"mingw", "sdk", "ld", "sh", "ar", "cc", "cxx", "mm", "mxx"}
+    for _, name in ipairs(names) do
+        local value = get_config(name)
+        if value ~= nil then
+            table.insert(configs, "--" .. name .. "=" .. tostring(value))
+        end
+    end
+    _get_configs_for_qt(package, configs, opt)
+    _get_configs_for_vcpkg(package, configs, opt)
+end
+
+-- get configs for generic, e.g. linux, macosx, bsd host platforms
+function _get_configs_for_generic(package, configs, opt)
+    local names = {"ld", "sh", "ar", "cc", "cxx", "mm", "mxx"}
+    for _, name in ipairs(names) do
+        local value = get_config(name)
+        if value ~= nil then
+            table.insert(configs, "--" .. name .. "=" .. tostring(value))
+        end
+    end
+    _get_configs_for_qt(package, configs, opt)
+    _get_configs_for_vcpkg(package, configs, opt)
+end
+
+-- get configs for host toolchain
+function _get_configs_for_host_toolchain(package, configs, opt)
+    local bindir = _get_config_from_toolchains(package, "bindir") or get_config("bin")
+    if bindir then
+        table.insert(configs, "--bin=" .. bindir)
+    end
+    local sdkdir = _get_config_from_toolchains(package, "sdkdir") or get_config("sdk")
+    if sdkdir then
+        table.insert(configs, "--sdk=" .. sdkdir)
+    end
+    local toolchain_name = get_config("toolchain")
+    if toolchain_name then
+        table.insert(configs, "--toolchain=" .. toolchain_name)
+    end
+    _get_configs_for_qt(package, configs, opt)
+    _get_configs_for_vcpkg(package, configs, opt)
+end
+
+-- get configs for cross
+function _get_configs_for_cross(package, configs, opt)
+    local cross = _get_config_from_toolchains(package, "cross") or get_config("cross")
+    if cross then
+        table.insert(configs, "--cross=" .. cross)
+    end
+    local bindir = _get_config_from_toolchains(package, "bindir") or get_config("bin")
+    if bindir then
+        table.insert(configs, "--bin=" .. bindir)
+    end
+    local sdkdir = _get_config_from_toolchains(package, "sdkdir") or get_config("sdk")
+    if sdkdir then
+        table.insert(configs, "--sdk=" .. sdkdir)
+    end
+    local toolchain_name = get_config("toolchain")
+    if toolchain_name then
+        table.insert(configs, "--toolchain=" .. toolchain_name)
+    end
+    local names = {"ld", "sh", "ar", "cc", "cxx", "mm", "mxx"}
+    for _, name in ipairs(names) do
+        local value = get_config(name)
+        if value ~= nil then
+            table.insert(configs, "--" .. name .. "=" .. tostring(value))
+        end
+    end
+end
+
 -- get configs
-function _get_configs(package, configs)
+function _get_configs(package, configs, opt)
+    opt = opt or {}
     local configs  = configs or {}
     local cflags   = table.join(table.wrap(package:config("cflags")),   get_config("cflags"))
     local cxflags  = table.join(table.wrap(package:config("cxflags")),  get_config("cxflags"))
@@ -52,52 +207,29 @@ function _get_configs(package, configs)
         table.insert(configs, "--kind=" .. (package:config("shared") and "shared" or "static"))
     end
     if package:is_plat("windows") then
-        local vs_runtime = package:config("vs_runtime")
-        if vs_runtime then
-            table.insert(configs, "--vs_runtime=" .. vs_runtime)
-        end
-    elseif package:is_plat("iphoneos", "watchos", "appletvos") then
-        local appledev = package:config("appledev")
-        if appledev then
-            table.insert(configs, "--appledev=" .. appledev)
-        end
-    elseif package:is_plat("cross") then
-        local cross = _get_config_from_toolchains(package, "cross") or get_config("cross")
-        if cross then
-            table.insert(configs, "--cross=" .. cross)
-        end
-        local bindir = _get_config_from_toolchains(package, "bindir") or get_config("bin")
-        if bindir then
-            table.insert(configs, "--bin=" .. bindir)
-        end
-        local sdkdir = _get_config_from_toolchains(package, "sdkdir") or get_config("sdk")
-        if sdkdir then
-            table.insert(configs, "--sdk=" .. sdkdir)
-        end
-        -- we can only modify toolchain for cross-compilation
-        --
-        -- e.g. xrepo install -p cross --toolchain=muslcc meson,
-        -- we cannot pass muslcc toolchain to it's deps(zlib, ..), because meson is always host binary and zlib is host library.
-        local toolchain_name = get_config("toolchain")
-        if toolchain_name then
-            table.insert(configs, "--toolchain=" .. toolchain_name)
-        end
-        local names = {"ld", "sh", "ar", "cc", "cxx"}
-        for _, name in ipairs(names) do
-            local value = get_config(name)
-            if value ~= nil then
-                table.insert(configs, "--" .. name .. "=" .. tostring(value))
-            end
+        _get_configs_for_windows(package, configs, opt)
+    elseif package:is_plat("android") then
+        _get_configs_for_android(package, configs, opt)
+    elseif package:is_plat("iphoneos", "watchos", "appletvos") or
+        -- for cross-compilation on macOS, @see https://github.com/xmake-io/xmake/issues/2804
+        (package:is_plat("macosx") and not package:is_arch(os.subarch())) then
+        _get_configs_for_appleos(package, configs, opt)
+    elseif package:is_plat("mingw") then
+        _get_configs_for_mingw(package, configs, opt)
+    elseif package:is_cross() then
+        _get_configs_for_cross(package, configs, opt)
+    elseif package:config("toolchains") then
+        -- we still need find system libraries,
+        -- it just pass toolchain environments if the toolchain is compatible with host
+        if _is_toolchain_compatible_with_host(package) then
+            _get_configs_for_host_toolchain(package, configs, opt)
+        else
+            _get_configs_for_cross(package, configs, opt)
         end
     else
-        local names = {"ndk", "ndk_sdkver", "vs", "vs_toolset", "mingw", "ld", "sh", "ar", "cc", "cxx", "mm", "mxx"}
-        for _, name in ipairs(names) do
-            local value = get_config(name)
-            if value ~= nil then
-                table.insert(configs, "--" .. name .. "=" .. tostring(value))
-            end
-        end
+        _get_configs_for_generic(package, configs, opt)
     end
+
     local policies = get_config("policies")
     if package:config("lto") and (not policies or not policies:find("build.optimization.lto", 1, true)) then
         if policies then
@@ -134,11 +266,35 @@ function _get_configs(package, configs)
     if ldflags and #ldflags > 0 then
         table.insert(configs, "--ldflags=" .. table.concat(ldflags, ' '))
     end
+    local buildir = opt.buildir or package:buildir()
+    if buildir then
+        table.insert(configs, "--buildir=" .. buildir)
+    end
     return configs
 end
 
+-- maybe in project?
+-- @see https://github.com/xmake-io/xmake/issues/3720
+function _maybe_in_project(package)
+    local dir = package:sourcedir() or package:cachedir()
+    local parentdir = path.directory(dir)
+    while parentdir and os.isdir(parentdir) do
+        if os.isfile(path.join(parentdir, "xmake.lua")) then
+            return true
+        end
+        parentdir = path.directory(parentdir)
+    end
+end
+
 -- set some builtin global options from the parent xmake
-function _set_builtin_argv(argv)
+function _set_builtin_argv(package, argv)
+    -- if the package cache directory is modified,
+    -- we need to force the project directory to be specified to avoid interference by the upper level xmake.lua.
+    -- and we also need to put `-P` in the first argument to avoid option.parse() parsing errors
+    if _maybe_in_project(package) then
+        table.insert(argv, "-P")
+        table.insert(argv, os.curdir())
+    end
     for _, name in ipairs({"diagnosis", "verbose", "quiet", "yes", "confirm", "root"}) do
         local value = option.get(name)
         if type(value) == "boolean" then
@@ -204,14 +360,19 @@ function _get_package_toolchains_envs(package, opt)
 
         -- pass custom toolchains definition in project
         for _, toolchain_inst in ipairs(toolchains_custom) do
-            local toolchains_file = os.tmpfile()
-            dprint("passing toolchain(%s) to %s", toolchain_inst:name(), toolchains_file)
-            local ok, errors = toolchain_inst:savefile(toolchains_file)
-            if not ok then
-                raise("save toolchain failed, %s", errors or "unknown")
+            -- we must load it first
+            -- @see https://github.com/xmake-io/xmake/issues/3774
+            if toolchain_inst:check() then
+                toolchain_inst:load()
+                local toolchains_file = os.tmpfile()
+                dprint("passing toolchain(%s) to %s", toolchain_inst:name(), toolchains_file)
+                local ok, errors = toolchain_inst:savefile(toolchains_file)
+                if not ok then
+                    raise("save toolchain failed, %s", errors or "unknown")
+                end
+                envs.XMAKE_TOOLCHAIN_DATAFILES = envs.XMAKE_TOOLCHAIN_DATAFILES or {}
+                table.insert(envs.XMAKE_TOOLCHAIN_DATAFILES, toolchains_file)
             end
-            envs.XMAKE_TOOLCHAIN_DATAFILES = envs.XMAKE_TOOLCHAIN_DATAFILES or {}
-            table.insert(envs.XMAKE_TOOLCHAIN_DATAFILES, toolchains_file)
         end
     end
     return envs
@@ -222,6 +383,8 @@ function buildenvs(package, opt)
     local envs = _get_package_toolchains_envs(package, opt)
     -- we should avoid using $XMAKE_CONFIGDIR outside to cause conflicts
     envs.XMAKE_CONFIGDIR = os.curdir()
+    envs.XMAKE_IN_XREPO  = "1"
+    envs.XMAKE_IN_PROJECT_GENERATOR = ""
     return envs
 end
 
@@ -235,15 +398,18 @@ function install(package, configs, opt)
     -- pass local repositories
     for _, repo in ipairs(repository.repositories()) do
         local repo_argv = {"repo"}
-        _set_builtin_argv(repo_argv)
+        _set_builtin_argv(package, repo_argv)
         table.join2(repo_argv, {"--add", repo:name(), repo:directory()})
         os.vrunv("xmake", repo_argv, {envs = envs})
     end
 
     -- pass configurations
-    local argv = {"f", "-y", "-c"}
-    _set_builtin_argv(argv)
-    for name, value in pairs(_get_configs(package, configs)) do
+    -- we need to put `-P` in the first argument of _set_builtin_argv() to avoid option.parse() parsing errors
+    local argv = {"f"}
+    _set_builtin_argv(package, argv)
+    table.insert(argv, "-y")
+    table.insert(argv, "-c")
+    for name, value in pairs(_get_configs(package, configs, opt)) do
         value = tostring(value):trim()
         if type(name) == "number" then
             if value ~= "" then
@@ -259,15 +425,15 @@ function install(package, configs, opt)
 
     -- do build
     argv = {"build"}
-    _set_builtin_argv(argv)
+    _set_builtin_argv(package, argv)
     if opt.target then
         table.insert(argv, opt.target)
     end
     os.vrunv("xmake", argv, {envs = envs})
 
     -- do install
-    argv = {"install", "-y", "-o", package:installdir()}
-    _set_builtin_argv(argv)
+    argv = {"install", "-y", "--nopkgs", "-o", package:installdir()}
+    _set_builtin_argv(package, argv)
     if opt.target then
         table.insert(argv, opt.target)
     end

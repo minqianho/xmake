@@ -29,7 +29,7 @@ function init(self)
     _super.init(self)
 
     -- add cuflags
-    if not is_plat("windows", "mingw") then
+    if not self:is_plat("windows", "mingw") then
         self:add("shared.cuflags", "-fPIC")
     end
 
@@ -135,10 +135,76 @@ function nf_symbol(self, level)
     local kind = self:kind()
     if kind == "ld" or kind == "sh" then
         -- clang/windows need add `-g` to linker to generate pdb symbol file
-        if self:plat() == "windows" and level == "debug" then
+        if self:is_plat("windows") and level == "debug" then
             return "-g"
         end
     else
         return _super.nf_symbol(self, level)
     end
 end
+
+-- make the exception flag
+--
+-- e.g.
+-- set_exceptions("cxx")
+-- set_exceptions("objc")
+-- set_exceptions("no-cxx")
+-- set_exceptions("no-objc")
+-- set_exceptions("cxx", "objc")
+function nf_exception(self, exp)
+    local maps = {
+        cxx = "-fcxx-exceptions",
+        ["no-cxx"] = "-fno-cxx-exceptions",
+        objc = "-fobjc-exceptions",
+        ["no-objc"] = "-fno-objc-exceptions"
+    }
+    local value = maps[exp]
+    if value then
+        return {exp:startswith("no-") and "-fno-exceptions" or "-fexceptions", value}
+    end
+end
+
+-- has -fms-runtime-lib?
+function _has_ms_runtime_lib(self)
+    local has_ms_runtime_lib = _g._HAS_MS_RUNTIME_LIB
+    if has_ms_runtime_lib == nil then
+        if self:has_flags("-fms-runtime-lib=dll", "cxflags", {flagskey = "clang_ms_runtime_lib"}) then
+            has_ms_runtime_lib = true
+        end
+        has_ms_runtime_lib = has_ms_runtime_lib or false
+        _g._HAS_MS_RUNTIME_LIB = has_ms_runtime_lib
+    end
+    return has_ms_runtime_lib
+end
+
+-- make vs runtime flag
+-- @see https://github.com/xmake-io/xmake/issues/3546
+function nf_runtime(self, vs_runtime)
+    if self:is_plat("windows") and vs_runtime then
+        if not _has_ms_runtime_lib(self) then
+            if vs_runtime:startswith("MD") then
+                wprint("%s runtime is not available for the current Clang compiler.", vs_runtime)
+            end
+            return
+        end
+        local maps
+        local kind = self:kind()
+        if language.sourcekinds()[kind] then
+            maps = {
+                MT  = "-fms-runtime-lib=static",
+                MTd = "-fms-runtime-lib=static_dbg",
+                MD  = "-fms-runtime-lib=dll",
+                MDd = "-fms-runtime-lib=dll_dbg"
+            }
+        elseif kind == "ld" or kind == "sh" then
+            maps = {
+                MT  = "-nostdlib",
+                MTd = "-nostdlib",
+                MD  = "-nostdlib",
+                MDd = "-nostdlib"
+            }
+        end
+        return maps and maps[vs_runtime]
+    end
+end
+

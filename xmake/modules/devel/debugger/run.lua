@@ -19,6 +19,7 @@
 --
 
 -- imports
+import("core.base.json")
 import("core.base.option")
 import("core.project.config")
 import("detect.tools.find_cudagdb")
@@ -30,11 +31,14 @@ import("detect.tools.find_x64dbg")
 import("detect.tools.find_ollydbg")
 import("detect.tools.find_devenv")
 import("detect.tools.find_vsjitdebugger")
+import("detect.tools.find_renderdoc")
+import("lib.detect.find_tool")
 
 -- run gdb
 function _run_gdb(program, argv, opt)
 
     -- find gdb
+    opt = opt or {}
     local gdb = find_gdb({program = config.get("debugger")})
     if not gdb then
         return false
@@ -46,7 +50,7 @@ function _run_gdb(program, argv, opt)
     table.insert(argv, 1, "--args")
 
     -- run it
-    os.execv(gdb, argv, opt)
+    os.execv(gdb, argv, table.join(opt, {exclusive = true}))
     return true
 end
 
@@ -54,6 +58,7 @@ end
 function _run_cudagdb(program, argv, opt)
 
     -- find cudagdb
+    opt = opt or {}
     local gdb = find_cudagdb({program = config.get("debugger")})
     if not gdb then
         return false
@@ -65,7 +70,7 @@ function _run_cudagdb(program, argv, opt)
     table.insert(argv, 1, "--args")
 
     -- run it
-    os.execv(gdb, argv, opt)
+    os.execv(gdb, argv, table.join(opt, {exclusive = true}))
     return true
 end
 
@@ -73,6 +78,7 @@ end
 function _run_lldb(program, argv, opt)
 
     -- find lldb
+    opt = opt or {}
     local lldb = find_lldb({program = config.get("debugger")})
     if not lldb then
         return false
@@ -91,7 +97,7 @@ function _run_lldb(program, argv, opt)
     end
 
     -- run it
-    os.execv(names[1], argv, opt)
+    os.execv(names[1], argv, table.join(opt, {exclusive = true}))
     return true
 end
 
@@ -209,6 +215,95 @@ function _run_devenv(program, argv, opt)
     return true
 end
 
+-- run renderdoc
+function _run_renderdoc(program, argv, opt)
+
+    -- find renderdoc
+    local renderdoc = find_renderdoc({program = config.get("debugger")})
+    if not renderdoc then
+        return false
+    end
+
+    -- build capture settings
+    local settings = {
+        rdocCaptureSettings = 1,
+        settings = {
+            autoStart = false,
+            commandLine = table.concat(table.wrap(argv), " "),
+            environment = json.mark_as_array({}),
+            executable = program,
+            inject = false,
+            numQueuedFrames = 0,
+            queuedFrameCap = 0,
+            workingDir = opt.curdir and path.absolute(opt.curdir) or "",
+            options = {
+                allowFullscreen = true,
+                allowVSync = true,
+                apiValidation = false,
+                captureAllCmdLists = false,
+                captureCallstacks = false,
+                captureCallstacksOnlyDraws = false,
+                debugOutputMute = true,
+                delayForDebugger = 0,
+                hookIntoChildren = false,
+                refAllResources = false,
+                verifyBufferAccess = false
+            }
+        }
+    }
+
+    -- save to temporary file
+    local capturefile = os.tmpfile() .. ".cap"
+    json.savefile(capturefile, settings)
+
+    -- run renderdoc
+    opt.detach = true
+    os.execv(renderdoc, { capturefile }, opt)
+    return true
+end
+
+-- run gede
+function _run_gede(program, argv, opt)
+
+    -- find gede
+    opt = opt or {}
+    -- 'gede --version' return with non-zero code
+    local gede = find_tool("gede", {program = config.get("debugger"), norun = true})
+    if not gede then
+        return false
+    end
+
+    -- patch arguments
+    argv = argv or {}
+    table.insert(argv, 1, program)
+    table.insert(argv, 1, "--args")
+    table.insert(argv, 1, "--no-show-config")
+
+    -- run it
+    os.execv(gede.program, argv, table.join(opt, {exclusive = true}))
+    return true
+end
+
+-- run seergdb
+function _run_seergdb(program, argv, opt)
+
+    -- find seergdb
+    opt = opt or {}
+    local seergdb = find_tool("seergdb", {program = config.get("debugger")})
+    if not seergdb then
+        return false
+    end
+
+    -- patch arguments
+    argv = argv or {}
+    table.insert(argv, 1, program)
+    table.insert(argv, 1, "--start")
+
+    -- run it
+    os.execv(seergdb.program, argv, table.join(opt, {exclusive = true}))
+    return true
+end
+
 -- run program with debugger
 --
 -- @param program   the program name
@@ -232,6 +327,9 @@ function main(program, argv, opt)
     ,   {"gdb"         , _run_gdb}
     ,   {"cudagdb"     , _run_cudagdb}
     ,   {"cudamemcheck", _run_cudamemcheck}
+    ,   {"renderdoc"   , _run_renderdoc}
+    ,   {"gede"        , _run_gede}
+    ,   {"seergdb"     , _run_seergdb}
     }
 
     -- for windows target or on windows?

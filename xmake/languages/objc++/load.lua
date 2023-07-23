@@ -53,6 +53,23 @@ function _get_apis()
     ,   "option.add_undefines"
     ,   "option.add_frameworks"
     ,   "option.add_rpathdirs"
+        -- package.add_xxx
+    ,   "package.add_links"
+    ,   "package.add_syslinks"
+    ,   "package.add_mflags"
+    ,   "package.add_mxflags"
+    ,   "package.add_mxxflags"
+    ,   "package.add_ldflags"
+    ,   "package.add_arflags"
+    ,   "package.add_shflags"
+    ,   "package.add_defines"
+    ,   "package.add_undefines"
+    ,   "package.add_frameworks"
+    ,   "package.add_rpathdirs"
+    ,   "package.add_linkdirs"
+    ,   "package.add_includedirs" --@note we don't need to use paths for package, see https://github.com/xmake-io/xmake/issues/717
+    ,   "package.add_sysincludedirs"
+    ,   "package.add_frameworkdirs"
         -- toolchain.add_xxx
     ,   "toolchain.add_links"
     ,   "toolchain.add_syslinks"
@@ -75,8 +92,8 @@ function _get_apis()
         -- target.set_xxx
         "target.set_headerdir"      -- TODO deprecated
     ,   "target.set_config_header"
-    ,   "target.set_pcheader"
-    ,   "target.set_pcxxheader"
+    ,   "target.set_pmheader"
+    ,   "target.set_pmxxheader"
         -- target.add_xxx
     ,   "target.add_headers"        -- TODO deprecated
     ,   "target.add_headerfiles"

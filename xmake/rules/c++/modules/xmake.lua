@@ -20,7 +20,10 @@
 
 -- define rule: c++.build.modules
 rule("c++.build.modules")
+
+    -- @note common.contains_modules() need it
     set_extensions(".mpp", ".mxx", ".cppm", ".ixx")
+
     add_deps("c++.build.modules.builder")
     add_deps("c++.build.modules.install")
 
@@ -35,6 +38,14 @@ rule("c++.build.modules")
             --
             -- maybe we will have a more fine-grained configuration strategy to disable it in the future.
             target:set("policy", "build.across_targets_in_parallel", false)
+
+            -- disable ccache for this target
+            --
+            -- Caching can affect incremental compilation, for example
+            -- by interfering with the results of depfile generation for msvc.
+            --
+            -- @see https://github.com/xmake-io/xmake/issues/3000
+            target:set("policy", "build.ccache", false)
 
             -- get modules support
             local modules_support = common.modules_support(target)
@@ -59,10 +70,28 @@ rule("c++.build.modules.builder")
             common.patch_sourcebatch(target, sourcebatch, opt)
             local modules = common.get_module_dependencies(target, sourcebatch, opt)
 
+            -- extract packages modules dependencies
+            local package_modules_data = common.get_all_package_modules(target, modules, opt)
+            if package_modules_data then
+                -- cull unused modules
+                package_modules_data = common.cull_unused_modules(target, modules, package_modules_data)
+                if package_modules_data then
+                    -- append to sourcebatch
+                    for name, package_module_data in pairs(package_modules_data) do
+                        table.insert(sourcebatch.sourcefiles, package_module_data.file)
+                    end
+
+                    -- we need to repatch and regenerate dependencies at this point
+                    common.patch_sourcebatch(target, sourcebatch, opt)
+                    opt.regenerate = true
+                    modules = common.get_module_dependencies(target, sourcebatch, opt)
+                end
+            end
+
             -- build modules
             common.build_modules_for_batchjobs(target, batchjobs, sourcebatch, modules, opt)
 
-            -- generate headerunits and we need do it before building modules
+            -- generate headerunits and we need to do it before building modules
             local user_headerunits, stl_headerunits = common.get_headerunits(target, sourcebatch, modules)
             if user_headerunits or stl_headerunits then
                 -- we need new group(headerunits)
@@ -107,17 +136,25 @@ rule("c++.build.modules.builder")
 
     before_link(function (target)
         import("modules_support.common")
-        common.append_dependency_objectfiles(target)
+        if target:data("cxx.has_modules") then
+            common.append_dependency_objectfiles(target)
+        end
     end)
 
     after_clean(function (target)
         import("core.base.option")
         import("modules_support.common")
-        os.tryrm(common.modules_cachedir(target))
-        if option.get("all") then
-            os.tryrm(common.stlmodules_cachedir(target))
-            common.localcache():clear()
-            common.localcache():save()
+        import("private.action.clean.remove_files")
+
+        -- we cannot use target:data("cxx.has_modules"),
+        -- because on_config will be not called when cleaning targets
+        if common.contains_modules(target) then
+            remove_files(common.modules_cachedir(target))
+            if option.get("all") then
+                remove_files(common.stlmodules_cachedir(target))
+                common.localcache():clear()
+                common.localcache():save()
+            end
         end
     end)
 
@@ -131,9 +168,6 @@ rule("c++.build.modules.install")
         -- we cannot use target:data("cxx.has_modules"),
         -- because on_config will be not called when installing targets
         if common.contains_modules(target) then
-            local sourcebatch = target:sourcebatches()["c++.build.modules.install"]
-            if sourcebatch then
-                target:add("installfiles", sourcebatch.sourcefiles, {prefixdir = "include"})
-            end
+            common.install_module_target(target)
         end
     end)

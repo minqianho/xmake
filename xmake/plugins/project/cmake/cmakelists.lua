@@ -28,6 +28,8 @@ import("core.base.hashset")
 import("core.project.rule")
 import("lib.detect.find_tool")
 import("private.utils.batchcmds")
+import("private.utils.rule_groups")
+import("plugins.project.utils.target_cmds", {rootdir = os.programdir()})
 
 -- get minimal cmake version
 function _get_cmake_minver()
@@ -61,16 +63,36 @@ function _translate_path(filepath, outputdir)
     end
 end
 
--- get unix path
-function _get_unix_path(filepath, outputdir)
+-- escape path
+function _escape_path(filepath)
+    if is_host("windows") then
+        filepath = filepath:gsub('\\', '/')
+    end
+    return filepath
+end
+
+-- escape path in flag
+-- @see https://github.com/xmake-io/xmake/issues/3161
+function _escape_path_in_flag(target, flag)
+    if is_host("windows") and target:has_tool("cc", "cl") then
+        -- e.g. /ManifestInput:xx, /def:xxx
+        if flag:find(":", 1, true) then
+            flag = _escape_path(flag)
+        end
+    end
+    return flag
+end
+
+-- get relative unix path
+function _get_relative_unix_path(filepath, outputdir)
     filepath = _translate_path(filepath, outputdir)
-    filepath = path.translate(filepath):gsub('\\', '/')
+    filepath = _escape_path(path.translate(filepath))
     return os.args(filepath)
 end
 
--- get unix path relative to the cmake path
+-- get relative unix path to the cmake path
 -- @see https://github.com/xmake-io/xmake/issues/2026
-function _get_unix_path_relative_to_cmake(filepath, outputdir)
+function _get_relative_unix_path_to_cmake(filepath, outputdir)
     filepath = _translate_path(filepath, outputdir)
     filepath = path.translate(filepath):gsub('\\', '/')
     if filepath and not path.is_absolute(filepath) then
@@ -117,7 +139,8 @@ function _sourcebatch_is_built(sourcebatch)
     local rulename = sourcebatch.rulename
     if rulename == "c.build" or rulename == "c++.build"
         or rulename == "asm.build" or rulename == "cuda.build"
-        or rulename == "objc.build" or rulename == "objc++.build" then
+        or rulename == "objc.build" or rulename == "objc++.build"
+        or rulename == "win.sdk.resource" then
         return true
     end
 end
@@ -126,17 +149,17 @@ end
 function _translate_flag(flag, outputdir)
     if flag then
         if path.instance_of(flag) then
-            flag = flag:clone():set(_get_unix_path_relative_to_cmake(flag:rawstr(), outputdir)):str()
+            flag = flag:clone():set(_get_relative_unix_path_to_cmake(flag:rawstr(), outputdir)):str()
         elseif path.is_absolute(flag) then
-            flag = _get_unix_path_relative_to_cmake(flag, outputdir)
+            flag = _get_relative_unix_path_to_cmake(flag, outputdir)
         elseif flag:startswith("-fmodule-file=") then
-            flag = "-fmodule-file=" .. _get_unix_path_relative_to_cmake(flag:sub(15), outputdir)
+            flag = "-fmodule-file=" .. _get_relative_unix_path_to_cmake(flag:sub(15), outputdir)
         elseif flag:startswith("-fmodule-mapper=") then
-            flag = "-fmodule-mapper=" .. _get_unix_path_relative_to_cmake(flag:sub(17), outputdir)
+            flag = "-fmodule-mapper=" .. _get_relative_unix_path_to_cmake(flag:sub(17), outputdir)
         elseif flag:match("(.+)=(.+)") then
             local k, v = flag:match("(.+)=(.+)")
             if v and v:endswith(".ifc") then -- e.g. hello=xxx/hello.ifc
-                flag = k .. "=" .. _get_unix_path_relative_to_cmake(v, outputdir)
+                flag = k .. "=" .. _get_relative_unix_path_to_cmake(v, outputdir)
             end
         end
     end
@@ -172,6 +195,55 @@ function _get_flags_from_fileconfig(fileconfig, outputdir, name)
     if #flags > 0 then
         return flags
     end
+end
+
+-- get flags from target
+-- @see https://github.com/xmake-io/xmake/issues/3594
+function _get_flags_from_target(target, flagkind)
+    local flags = _get_configs_from_target(target, flagkind)
+    local extraconf = target:extraconf(flagkind)
+    local sourcekind
+    if flagkind == "cflags" then
+        sourcekind = "cc"
+    elseif flagkind == "cxxflags" or flagkind == "cxflags" then
+        sourcekind = "cxx"
+    elseif flagkind == "asflags" then
+        sourcekind = "as"
+    elseif flagkind == "cuflags" then
+        sourcekind = "cu"
+    else
+        raise("unknown flag kind %s", flagkind)
+    end
+    local toolinst = target:compiler(sourcekind)
+
+    -- does this flag belong to this tool?
+    -- @see https://github.com/xmake-io/xmake/issues/3022
+    --
+    -- e.g.
+    -- for all: add_cxxflags("-g")
+    -- only for clang: add_cxxflags("clang::-stdlib=libc++")
+    -- only for clang and multiple flags: add_cxxflags("-stdlib=libc++", "-DFOO", {tools = "clang"})
+    --
+    local result = {}
+    for _, flag in ipairs(flags) do
+        local for_this_tool = true
+        local flagconf = extraconf and extraconf[flag]
+        if type(flag) == "string" and flag:find("::", 1, true) then
+            for_this_tool = false
+            local splitinfo = flag:split("::", {plain = true})
+            local toolname = splitinfo[1]
+            if toolname == toolinst:name() then
+                flag = splitinfo[2]
+                for_this_tool = true
+            end
+        elseif flagconf and flagconf.tools then
+            for_this_tool = table.contains(table.wrap(flagconf.tools), toolinst:name())
+        end
+        if for_this_tool then
+            table.insert(result, flag)
+        end
+    end
+    return result
 end
 
 -- add project info
@@ -263,7 +335,7 @@ function _add_target_binary(cmakelists, target, outputdir)
     _set_target_compiler(cmakelists, target)
     cmakelists:print("add_executable(%s \"\")", target:name())
     cmakelists:print("set_target_properties(%s PROPERTIES OUTPUT_NAME \"%s\")", target:name(), target:basename())
-    cmakelists:print("set_target_properties(%s PROPERTIES RUNTIME_OUTPUT_DIRECTORY \"%s\")", target:name(), _get_unix_path_relative_to_cmake(target:targetdir(), outputdir))
+    cmakelists:print("set_target_properties(%s PROPERTIES RUNTIME_OUTPUT_DIRECTORY \"%s\")", target:name(), _get_relative_unix_path_to_cmake(target:targetdir(), outputdir))
 end
 
 -- add target: static
@@ -271,7 +343,7 @@ function _add_target_static(cmakelists, target, outputdir)
     _set_target_compiler(cmakelists, target)
     cmakelists:print("add_library(%s STATIC \"\")", target:name())
     cmakelists:print("set_target_properties(%s PROPERTIES OUTPUT_NAME \"%s\")", target:name(), target:basename())
-    cmakelists:print("set_target_properties(%s PROPERTIES ARCHIVE_OUTPUT_DIRECTORY \"%s\")", target:name(), _get_unix_path_relative_to_cmake(target:targetdir(), outputdir))
+    cmakelists:print("set_target_properties(%s PROPERTIES ARCHIVE_OUTPUT_DIRECTORY \"%s\")", target:name(), _get_relative_unix_path_to_cmake(target:targetdir(), outputdir))
 end
 
 -- add target: shared
@@ -281,10 +353,10 @@ function _add_target_shared(cmakelists, target, outputdir)
     cmakelists:print("set_target_properties(%s PROPERTIES OUTPUT_NAME \"%s\")", target:name(), target:basename())
     if target:is_plat("windows") then
         -- @see https://github.com/xmake-io/xmake/issues/2192
-        cmakelists:print("set_target_properties(%s PROPERTIES RUNTIME_OUTPUT_DIRECTORY \"%s\")", target:name(), _get_unix_path_relative_to_cmake(target:targetdir(), outputdir))
-        cmakelists:print("set_target_properties(%s PROPERTIES ARCHIVE_OUTPUT_DIRECTORY \"%s\")", target:name(), _get_unix_path_relative_to_cmake(target:targetdir(), outputdir))
+        cmakelists:print("set_target_properties(%s PROPERTIES RUNTIME_OUTPUT_DIRECTORY \"%s\")", target:name(), _get_relative_unix_path_to_cmake(target:targetdir(), outputdir))
+        cmakelists:print("set_target_properties(%s PROPERTIES ARCHIVE_OUTPUT_DIRECTORY \"%s\")", target:name(), _get_relative_unix_path_to_cmake(target:targetdir(), outputdir))
     else
-        cmakelists:print("set_target_properties(%s PROPERTIES LIBRARY_OUTPUT_DIRECTORY \"%s\")", target:name(), _get_unix_path_relative_to_cmake(target:targetdir(), outputdir))
+        cmakelists:print("set_target_properties(%s PROPERTIES LIBRARY_OUTPUT_DIRECTORY \"%s\")", target:name(), _get_relative_unix_path_to_cmake(target:targetdir(), outputdir))
     end
 end
 
@@ -312,7 +384,7 @@ function _add_target_sources(cmakelists, target, outputdir)
     for _, sourcebatch in table.orderpairs(target:sourcebatches()) do
         if _sourcebatch_is_built(sourcebatch) then
             for _, sourcefile in ipairs(sourcebatch.sourcefiles) do
-                cmakelists:print("    " .. _get_unix_path(sourcefile, outputdir))
+                cmakelists:print("    " .. _get_relative_unix_path(sourcefile, outputdir))
             end
         end
         if sourcebatch.sourcekind == "cu" then
@@ -320,12 +392,12 @@ function _add_target_sources(cmakelists, target, outputdir)
         end
     end
     for _, headerfile in ipairs(target:headerfiles()) do
-        cmakelists:print("    " .. _get_unix_path(headerfile, outputdir))
+        cmakelists:print("    " .. _get_relative_unix_path(headerfile, outputdir))
     end
     cmakelists:print(")")
     if has_cuda then
         cmakelists:print("set_target_properties(%s PROPERTIES CUDA_SEPARABLE_COMPILATION ON)", target:name())
-        local devlink = target:values("cuda.build.devlink")
+        local devlink = target:policy("build.cuda.devlink") or target:values("cuda.build.devlink")
         if devlink ~= nil then
             cmakelists:print("set_target_properties(%s PROPERTIES CUDA_RESOLVE_DEVICE_SYMBOLS %s)", target:name(), devlink and "ON" or "OFF")
         end
@@ -344,36 +416,36 @@ function _add_target_source_groups(cmakelists, target, outputdir)
         local sources = {}
         local recurse_sources = {}
         if path.is_absolute(rootdir) then
-            rootdir = _get_unix_path(rootdir, outputdir)
+            rootdir = _get_relative_unix_path(rootdir, outputdir)
         else
-            rootdir = string.format("${CMAKE_CURRENT_SOURCE_DIR}/%s", _get_unix_path(rootdir, outputdir))
+            rootdir = string.format("${CMAKE_CURRENT_SOURCE_DIR}/%s", _get_relative_unix_path(rootdir, outputdir))
         end
         for _, filepattern in ipairs(files) do
             if filepattern:find("**", 1, true) then
                 filepattern = filepattern:gsub("%*%*", "*")
-                table.insert(recurse_sources, _get_unix_path(path.join(rootdir, filepattern), outputdir))
+                table.insert(recurse_sources, _get_relative_unix_path(path.join(rootdir, filepattern), outputdir))
             else
-                table.insert(sources, _get_unix_path(path.join(rootdir, filepattern), outputdir))
+                table.insert(sources, _get_relative_unix_path(path.join(rootdir, filepattern), outputdir))
             end
         end
         if #sources > 0 then
             cmakelists:print("FILE(GLOB %s_GROUP_SOURCE_LIST %s)", target:name(), table.concat(sources, " "))
             if mode and mode == "plain" then
                 cmakelists:print("source_group(%s FILES ${%s_GROUP_SOURCE_LIST})",
-                    _get_unix_path(filegroup, outputdir), target:name())
+                    _get_relative_unix_path(filegroup, outputdir), target:name())
             else
                 cmakelists:print("source_group(TREE %s PREFIX %s FILES ${%s_GROUP_SOURCE_LIST})",
-                    rootdir, _get_unix_path(filegroup, outputdir), target:name())
+                    rootdir, _get_relative_unix_path(filegroup, outputdir), target:name())
             end
         end
         if #recurse_sources > 0 then
             cmakelists:print("FILE(GLOB_RECURSE %s_GROUP_RECURSE_SOURCE_LIST %s)", target:name(), table.concat(recurse_sources, " "))
             if mode and mode == "plain" then
                 cmakelists:print("source_group(%s FILES ${%s_GROUP_RECURSE_SOURCE_LIST})",
-                    _get_unix_path(filegroup, outputdir), target:name())
+                    _get_relative_unix_path(filegroup, outputdir), target:name())
             else
                 cmakelists:print("source_group(TREE %s PREFIX %s FILES ${%s_GROUP_RECURSE_SOURCE_LIST})",
-                    rootdir, _get_unix_path(filegroup, outputdir), target:name())
+                    rootdir, _get_relative_unix_path(filegroup, outputdir), target:name())
             end
         end
     end
@@ -386,7 +458,7 @@ function _add_target_precompiled_header(cmakelists, target, outputdir)
         cmakelists:print("target_precompile_headers(%s PRIVATE", target:name())
         cmakelists:print("    $<$<COMPILE_LANGUAGE:%s>:${CMAKE_CURRENT_SOURCE_DIR}/%s>",
             target:get("pcxxheader") and "CXX" or "C",
-            _get_unix_path(precompiled_header, outputdir))
+            _get_relative_unix_path(precompiled_header, outputdir))
         cmakelists:print(")")
     end
 end
@@ -395,9 +467,10 @@ end
 function _add_target_include_directories(cmakelists, target, outputdir)
     local includedirs = _get_configs_from_target(target, "includedirs")
     if #includedirs > 0 then
-        cmakelists:print("target_include_directories(%s PRIVATE", target:name())
+        local access_type = target:kind() == "headeronly" and "INTERFACE" or "PRIVATE"
+        cmakelists:print("target_include_directories(%s %s", target:name(), access_type)
         for _, includedir in ipairs(includedirs) do
-            cmakelists:print("    " .. _get_unix_path(includedir, outputdir))
+            cmakelists:print("    " .. _get_relative_unix_path(includedir, outputdir))
         end
         cmakelists:print(")")
     end
@@ -405,14 +478,14 @@ function _add_target_include_directories(cmakelists, target, outputdir)
     if includedirs_interface then
         cmakelists:print("target_include_directories(%s INTERFACE", target:name())
         for _, headerdir in ipairs(includedirs_interface) do
-            cmakelists:print("    " .. _get_unix_path(headerdir, outputdir))
+            cmakelists:print("    " .. _get_relative_unix_path(headerdir, outputdir))
         end
         cmakelists:print(")")
     end
     -- export config header directory (deprecated)
     local configheader = target:configheader()
     if configheader then
-        cmakelists:print("target_include_directories(%s PUBLIC %s)", target:name(), _get_unix_path(path.directory(configheader), outputdir))
+        cmakelists:print("target_include_directories(%s PUBLIC %s)", target:name(), _get_relative_unix_path(path.directory(configheader), outputdir))
     end
 end
 
@@ -425,7 +498,7 @@ function _add_target_sysinclude_directories(cmakelists, target, outputdir)
         -- TODO should be `SYSTEM PRIVATE`
         cmakelists:print("target_include_directories(%s PRIVATE", target:name())
         for _, includedir in ipairs(includedirs) do
-            cmakelists:print("    " .. _get_unix_path(includedir, outputdir))
+            cmakelists:print("    " .. _get_relative_unix_path(includedir, outputdir))
         end
         cmakelists:print(")")
     end
@@ -433,7 +506,7 @@ function _add_target_sysinclude_directories(cmakelists, target, outputdir)
     if includedirs_interface then
         cmakelists:print("target_include_directories(%s INTERFACE", target:name())
         for _, headerdir in ipairs(includedirs_interface) do
-            cmakelists:print("    " .. _get_unix_path(headerdir, outputdir))
+            cmakelists:print("    " .. _get_relative_unix_path(headerdir, outputdir))
         end
         cmakelists:print(")")
     end
@@ -445,10 +518,10 @@ function _add_target_framework_directories(cmakelists, target, outputdir)
     if #frameworkdirs > 0 then
         cmakelists:print("target_compile_options(%s PRIVATE", target:name())
         for _, frameworkdir in ipairs(frameworkdirs) do
-            cmakelists:print("    $<$<COMPILE_LANGUAGE:C>:-F" .. _get_unix_path(frameworkdir, outputdir) .. ">")
-            cmakelists:print("    $<$<COMPILE_LANGUAGE:CXX>:-F" .. _get_unix_path(frameworkdir, outputdir) .. ">")
-            cmakelists:print("    $<$<COMPILE_LANGUAGE:OBJC>:-F" .. _get_unix_path(frameworkdir, outputdir) .. ">")
-            cmakelists:print("    $<$<COMPILE_LANGUAGE:OBJCXX>:-F" .. _get_unix_path(frameworkdir, outputdir) .. ">")
+            cmakelists:print("    $<$<COMPILE_LANGUAGE:C>:-F" .. _get_relative_unix_path(frameworkdir, outputdir) .. ">")
+            cmakelists:print("    $<$<COMPILE_LANGUAGE:CXX>:-F" .. _get_relative_unix_path(frameworkdir, outputdir) .. ">")
+            cmakelists:print("    $<$<COMPILE_LANGUAGE:OBJC>:-F" .. _get_relative_unix_path(frameworkdir, outputdir) .. ">")
+            cmakelists:print("    $<$<COMPILE_LANGUAGE:OBJCXX>:-F" .. _get_relative_unix_path(frameworkdir, outputdir) .. ">")
         end
         cmakelists:print(")")
         local cmake_minver = _get_cmake_minver()
@@ -458,7 +531,7 @@ function _add_target_framework_directories(cmakelists, target, outputdir)
             cmakelists:print("target_link_libraries(%s PRIVATE", target:name())
         end
         for _, frameworkdir in ipairs(frameworkdirs) do
-            cmakelists:print("    -F" .. _get_unix_path(frameworkdir, outputdir))
+            cmakelists:print("    -F" .. _get_relative_unix_path(frameworkdir, outputdir))
         end
         cmakelists:print(")")
     end
@@ -466,10 +539,10 @@ function _add_target_framework_directories(cmakelists, target, outputdir)
     if frameworkdirs_interface then
         cmakelists:print("target_compile_options(%s PRIVATE", target:name())
         for _, frameworkdir in ipairs(frameworkdirs_interface) do
-            cmakelists:print("    $<$<COMPILE_LANGUAGE:C>:-F" .. _get_unix_path(frameworkdir, outputdir) .. ">")
-            cmakelists:print("    $<$<COMPILE_LANGUAGE:CXX>:-F" .. _get_unix_path(frameworkdir, outputdir) .. ">")
-            cmakelists:print("    $<$<COMPILE_LANGUAGE:OBJC>:-F" .. _get_unix_path(frameworkdir, outputdir) .. ">")
-            cmakelists:print("    $<$<COMPILE_LANGUAGE:OBJCXX>:-F" .. _get_unix_path(frameworkdir, outputdir) .. ">")
+            cmakelists:print("    $<$<COMPILE_LANGUAGE:C>:-F" .. _get_relative_unix_path(frameworkdir, outputdir) .. ">")
+            cmakelists:print("    $<$<COMPILE_LANGUAGE:CXX>:-F" .. _get_relative_unix_path(frameworkdir, outputdir) .. ">")
+            cmakelists:print("    $<$<COMPILE_LANGUAGE:OBJC>:-F" .. _get_relative_unix_path(frameworkdir, outputdir) .. ">")
+            cmakelists:print("    $<$<COMPILE_LANGUAGE:OBJCXX>:-F" .. _get_relative_unix_path(frameworkdir, outputdir) .. ">")
         end
         cmakelists:print(")")
     end
@@ -494,7 +567,7 @@ function _add_target_sourcefiles_flags(cmakelists, target, sourcefile, name, out
         local flags = _get_flags_from_fileconfig(fileconfig, outputdir, name)
         if flags and #flags > 0 then
             cmakelists:print("set_source_files_properties("
-                .. _get_unix_path_relative_to_cmake(sourcefile, outputdir)
+                .. _get_relative_unix_path_to_cmake(sourcefile, outputdir)
                 .. " PROPERTIES COMPILE_OPTIONS")
             local flagstrs = {}
             for _, flag in ipairs(flags) do
@@ -517,23 +590,27 @@ end
 
 -- add target compile options
 function _add_target_compile_options(cmakelists, target, outputdir)
-    local cflags   = _get_configs_from_target(target, "cflags")
-    local cxflags  = _get_configs_from_target(target, "cxflags")
-    local cxxflags = _get_configs_from_target(target, "cxxflags")
-    local cuflags  = _get_configs_from_target(target, "cuflags")
+    local cflags   = _get_flags_from_target(target, "cflags")
+    local cxflags  = _get_flags_from_target(target, "cxflags")
+    local cxxflags = _get_flags_from_target(target, "cxxflags")
+    local cuflags  = _get_flags_from_target(target, "cuflags")
     if #cflags > 0 or #cxflags > 0 or #cxxflags > 0 or #cuflags > 0 then
         cmakelists:print("target_compile_options(%s PRIVATE", target:name())
         for _, flag in ipairs(_translate_flags(cflags, outputdir)) do
+            flag = _escape_path_in_flag(target, flag)
             cmakelists:print("    $<$<COMPILE_LANGUAGE:C>:" .. flag .. ">")
         end
         for _, flag in ipairs(_translate_flags(cxflags, outputdir)) do
+            flag = _escape_path_in_flag(target, flag)
             cmakelists:print("    $<$<COMPILE_LANGUAGE:C>:" .. flag .. ">")
             cmakelists:print("    $<$<COMPILE_LANGUAGE:CXX>:" .. flag .. ">")
         end
         for _, flag in ipairs(_translate_flags(cxxflags, outputdir)) do
+            flag = _escape_path_in_flag(target, flag)
             cmakelists:print("    $<$<COMPILE_LANGUAGE:CXX>:" .. flag .. ">")
         end
         for _, flag in ipairs(_translate_flags(cuflags, outputdir)) do
+            flag = _escape_path_in_flag(target, flag)
             cmakelists:print("    $<$<COMPILE_LANGUAGE:CUDA>:" .. flag .. ">")
         end
         cmakelists:print(")")
@@ -583,6 +660,39 @@ function _add_target_warnings(cmakelists, target)
             cmakelists:print("    target_compile_options(%s PRIVATE %s)", target:name(), flags_gcc[warn])
         end
         cmakelists:print("endif()")
+    end
+end
+
+-- add target exceptions
+function _add_target_exceptions(cmakelists, target)
+    local flags_gcc =
+    {
+        cxx = "-fcxx-exceptions",
+        ["no-cxx"] = "-fno-cxx-exceptions",
+        objc = "-fobjc-exceptions",
+        ["no-objc"] = "-fno-objc-exceptions"
+    }
+    local flags_msvc =
+    {
+        cxx = "/EHsc",
+        ["no-cxx"] = "/EHsc-"
+    }
+    local exceptions = target:get("exceptions")
+    if exceptions then
+        if exceptions == "none" then
+            cmakelists:print("string(REPLACE \"/EHsc\" \"\" CMAKE_CXX_FLAGS \"${CMAKE_CXX_FLAGS}\")")
+        else
+            cmakelists:print("if(MSVC)")
+            -- msvc or clang-cl
+            for _, exception in ipairs(exceptions) do
+                cmakelists:print("    target_compile_options(%s PRIVATE %s)", target:name(), flags_msvc[exception])
+            end
+            cmakelists:print("else()")
+            for _, exception in ipairs(exceptions) do
+                cmakelists:print("    target_compile_options(%s PRIVATE %s)", target:name(), flags_gcc[exception])
+            end
+            cmakelists:print("endif()")
+        end
     end
 end
 
@@ -741,7 +851,7 @@ function _add_target_link_libraries(cmakelists, target, outputdir)
         cmakelists:print("target_link_libraries(%s PRIVATE", target:name())
         for _, objectfile in ipairs(target:objectfiles()) do
             if not objectfiles_set:has(objectfile) then
-                cmakelists:print("    " .. _get_unix_path_relative_to_cmake(objectfile, outputdir))
+                cmakelists:print("    " .. _get_relative_unix_path_to_cmake(objectfile, outputdir))
             end
         end
         cmakelists:print(")")
@@ -756,20 +866,20 @@ function _add_target_link_directories(cmakelists, target, outputdir)
         if cmake_minver:ge("3.13.0") then
             cmakelists:print("target_link_directories(%s PRIVATE", target:name())
             for _, linkdir in ipairs(linkdirs) do
-                cmakelists:print("    " .. _get_unix_path(linkdir, outputdir))
+                cmakelists:print("    " .. _get_relative_unix_path(linkdir, outputdir))
             end
             cmakelists:print(")")
         else
             cmakelists:print("if(MSVC)")
             cmakelists:print("    target_link_libraries(%s PRIVATE", target:name())
             for _, linkdir in ipairs(linkdirs) do
-                cmakelists:print("        -libpath:" .. _get_unix_path(linkdir, outputdir))
+                cmakelists:print("        -libpath:" .. _get_relative_unix_path(linkdir, outputdir))
             end
             cmakelists:print("    )")
             cmakelists:print("else()")
             cmakelists:print("    target_link_libraries(%s PRIVATE", target:name())
             for _, linkdir in ipairs(linkdirs) do
-                cmakelists:print("        -L" .. _get_unix_path(linkdir, outputdir))
+                cmakelists:print("        -L" .. _get_relative_unix_path(linkdir, outputdir))
             end
             cmakelists:print("    )")
             cmakelists:print("endif()")
@@ -784,9 +894,7 @@ function _add_target_link_options(cmakelists, target)
     if #ldflags > 0 or #shflags > 0 then
         local flags = {}
         for _, flag in ipairs(table.unique(table.join(ldflags, shflags))) do
-            if target:linker():has_flags(flag) then
-                table.insert(flags, flag)
-            end
+            table.insert(flags, flag)
         end
         if #flags > 0 then
             local cmake_minver = _get_cmake_minver()
@@ -796,6 +904,7 @@ function _add_target_link_options(cmakelists, target)
                 cmakelists:print("target_link_libraries(%s PRIVATE", target:name())
             end
             for _, flag in ipairs(flags) do
+                flag = _escape_path_in_flag(target, flag)
                 cmakelists:print("    " .. flag)
             end
             cmakelists:print(")")
@@ -813,44 +922,47 @@ function _get_command_string(cmd, outputdir)
         for _, v in ipairs(cmd.argv) do
             table.insert(argv, _translate_flag(v, outputdir))
         end
-        local command = _get_unix_path_relative_to_cmake(cmd.program) .. " " .. os.args(argv)
+        local command = _get_relative_unix_path_to_cmake(cmd.program) .. " " .. os.args(argv)
         if opt and opt.curdir then
-            command = "${CMAKE_COMMAND} -E chdir " .. _get_unix_path_relative_to_cmake(opt.curdir, outputdir) .. " " .. command
+            command = "${CMAKE_COMMAND} -E chdir " .. _get_relative_unix_path_to_cmake(opt.curdir, outputdir) .. " " .. command
         end
         return command
     elseif kind == "cp" then
         if os.isdir(cmd.srcpath) then
             return string.format("${CMAKE_COMMAND} -E copy_directory %s %s",
-                _get_unix_path_relative_to_cmake(cmd.srcpath, outputdir), _get_unix_path_relative_to_cmake(cmd.dstpath, outputdir))
+                _get_relative_unix_path_to_cmake(cmd.srcpath, outputdir), _get_relative_unix_path_to_cmake(cmd.dstpath, outputdir))
         else
             return string.format("${CMAKE_COMMAND} -E copy %s %s",
-                _get_unix_path_relative_to_cmake(cmd.srcpath, outputdir), _get_unix_path_relative_to_cmake(cmd.dstpath, outputdir))
+                _get_relative_unix_path_to_cmake(cmd.srcpath, outputdir), _get_relative_unix_path_to_cmake(cmd.dstpath, outputdir))
         end
     elseif kind == "rm" then
-        return string.format("${CMAKE_COMMAND} -E rm -rf %s", _get_unix_path_relative_to_cmake(cmd.filepath, outputdir))
+        return string.format("${CMAKE_COMMAND} -E rm -rf %s", _get_relative_unix_path_to_cmake(cmd.filepath, outputdir))
     elseif kind == "mv" then
         return string.format("${CMAKE_COMMAND} -E rename %s %s",
-            _get_unix_path_relative_to_cmake(cmd.srcpath, outputdir), _get_unix_path_relative_to_cmake(cmd.dstpath, outputdir))
+            _get_relative_unix_path_to_cmake(cmd.srcpath, outputdir), _get_relative_unix_path_to_cmake(cmd.dstpath, outputdir))
     elseif kind == "cd" then
-        return string.format("cd %s", _get_unix_path_relative_to_cmake(cmd.dir, outputdir))
+        return string.format("cd %s", _get_relative_unix_path_to_cmake(cmd.dir, outputdir))
     elseif kind == "mkdir" then
-        return string.format("${CMAKE_COMMAND} -E make_directory %s", _get_unix_path_relative_to_cmake(cmd.dir, outputdir))
+        return string.format("${CMAKE_COMMAND} -E make_directory %s", _get_relative_unix_path_to_cmake(cmd.dir, outputdir))
     elseif kind == "show" then
         return string.format("echo %s", colors.ignore(cmd.showtext))
     end
 end
 
 -- add target custom commands for batchcmds
-function _add_target_custom_commands_for_batchcmds(cmakelists, target, outputdir, suffix, batchcmds)
+function _add_target_custom_commands_for_batchcmds(cmakelists, target, outputdir, suffix, cmds)
+    if #cmds == 0 then
+        return
+    end
     if suffix == "before" then
         -- ADD_CUSTOM_COMMAND and PRE_BUILD did not work as I expected,
-        -- so we need use add_dependencies and fake target to support it.
+        -- so we need to use add_dependencies and fake target to support it.
         --
         -- @see https://gitlab.kitware.com/cmake/cmake/-/issues/17802
         --
         local key = target:name() .. "_" .. hash.uuid():split("-", {plain = true})[1]
         cmakelists:print("add_custom_command(OUTPUT output_%s", key)
-        for _, cmd in ipairs(batchcmds:cmds()) do
+        for _, cmd in ipairs(cmds) do
             local command = _get_command_string(cmd, outputdir)
             if command then
                 cmakelists:print("    COMMAND %s", command)
@@ -862,12 +974,10 @@ function _add_target_custom_commands_for_batchcmds(cmakelists, target, outputdir
         cmakelists:print("    DEPENDS output_%s", key)
         cmakelists:print(")")
         cmakelists:print("add_dependencies(%s target_%s)", target:name(), key)
-    else
+    elseif suffix == "after" then
         cmakelists:print("add_custom_command(TARGET %s", target:name())
-        if suffix == "after" then
-            cmakelists:print("    POST_BUILD")
-        end
-        for _, cmd in ipairs(batchcmds:cmds()) do
+        cmakelists:print("    POST_BUILD")
+        for _, cmd in ipairs(cmds) do
             local command = _get_command_string(cmd, outputdir)
             if command then
                 cmakelists:print("    COMMAND %s", command)
@@ -878,67 +988,26 @@ function _add_target_custom_commands_for_batchcmds(cmakelists, target, outputdir
     end
 end
 
--- add target custom commands for target
-function _add_target_custom_commands_for_target(cmakelists, target, outputdir, suffix)
-    for _, ruleinst in ipairs(target:orderules()) do
-        local scriptname = "buildcmd" .. (suffix and ("_" .. suffix) or "")
-        local script = ruleinst:script(scriptname)
-        if script then
-            local batchcmds_ = batchcmds.new({target = target})
-            script(target, batchcmds_, {})
-            if not batchcmds_:empty() then
-                _add_target_custom_commands_for_batchcmds(cmakelists, target, outputdir, suffix, batchcmds_)
-            end
-        end
-    end
-end
-
--- add target custom commands for object rules
-function _add_target_custom_commands_for_objectrules(cmakelists, target, sourcebatch, outputdir, suffix)
-
-    -- get rule
-    local rulename = assert(sourcebatch.rulename, "unknown rule for sourcebatch!")
-    local ruleinst = assert(project.rule(rulename) or rule.rule(rulename), "unknown rule: %s", rulename)
-
-    -- generate commands for xx_buildcmd_files
-    local scriptname = "buildcmd_files" .. (suffix and ("_" .. suffix) or "")
-    local script = ruleinst:script(scriptname)
-    if script then
-        local batchcmds_ = batchcmds.new({target = target})
-        script(target, batchcmds_, sourcebatch, {})
-        if not batchcmds_:empty() then
-            _add_target_custom_commands_for_batchcmds(cmakelists, target, outputdir, suffix, batchcmds_)
-        end
-    end
-
-    -- generate commands for xx_buildcmd_file
-    if not script then
-        scriptname = "buildcmd_file" .. (suffix and ("_" .. suffix) or "")
-        script = ruleinst:script(scriptname)
-        if script then
-            local sourcekind = sourcebatch.sourcekind
-            for _, sourcefile in ipairs(sourcebatch.sourcefiles) do
-                local batchcmds_ = batchcmds.new({target = target})
-                script(target, batchcmds_, sourcefile, {})
-                if not batchcmds_:empty() then
-                    _add_target_custom_commands_for_batchcmds(cmakelists, target, outputdir, suffix, batchcmds_)
-                end
-            end
-        end
-    end
-end
-
 -- add target custom commands
 function _add_target_custom_commands(cmakelists, target, outputdir)
-    _add_target_custom_commands_for_target(cmakelists, target, outputdir, "before")
-    for _, sourcebatch in table.orderpairs(target:sourcebatches()) do
-        if not _sourcebatch_is_built(sourcebatch) then
-            _add_target_custom_commands_for_objectrules(cmakelists, target, sourcebatch, outputdir, "before")
-            _add_target_custom_commands_for_objectrules(cmakelists, target, sourcebatch, outputdir)
-            _add_target_custom_commands_for_objectrules(cmakelists, target, sourcebatch, outputdir, "after")
-        end
-    end
-    _add_target_custom_commands_for_target(cmakelists, target, outputdir, "after")
+
+    -- build sourcebatch groups first
+    local sourcegroups = rule_groups.build_sourcebatch_groups(target, target:sourcebatches())
+
+    -- add before commands
+    -- we use irpairs(groups), because the last group that should be given the highest priority.
+    local cmds_before = {}
+    target_cmds.get_target_buildcmd(target, cmds_before, "before")
+    target_cmds.get_target_buildcmd_sourcegroups(target, cmds_before, sourcegroups, "before")
+    -- rule.on_buildcmd_files should also be executed before building the target, as cmake PRE_BUILD does not work.
+    target_cmds.get_target_buildcmd_sourcegroups(target, cmds_before, sourcegroups)
+    _add_target_custom_commands_for_batchcmds(cmakelists, target, outputdir, "before", cmds_before)
+
+    -- add after commands
+    local cmds_after = {}
+    target_cmds.get_target_buildcmd_sourcegroups(target, cmds_after, sourcegroups, "after")
+    target_cmds.get_target_buildcmd(target, cmds_after, "after")
+    _add_target_custom_commands_for_batchcmds(cmakelists, target, outputdir, "after", cmds_after)
 end
 
 -- TODO export target headers (deprecated)
@@ -987,7 +1056,7 @@ function _add_target(cmakelists, target, outputdir)
     _add_target_dependencies(cmakelists, target)
 
     -- add target custom commands
-    -- we need call it first for running all rules, these rules will change some flags, e.g. c++modules
+    -- we need to call it first for running all rules, these rules will change some flags, e.g. c++modules
     _add_target_custom_commands(cmakelists, target, outputdir)
 
     -- add target precompilied header
@@ -1010,6 +1079,9 @@ function _add_target(cmakelists, target, outputdir)
 
     -- add target warnings
     _add_target_warnings(cmakelists, target)
+
+    -- add target exceptions 
+    _add_target_exceptions(cmakelists, target)
 
     -- add target languages
     _add_target_languages(cmakelists, target)

@@ -1,7 +1,4 @@
 target("lua")
-    if not is_config("runtime", "lua") then
-        set_default(false)
-    end
     set_kind("static")
     set_warnings("all")
 
@@ -22,7 +19,7 @@ target("lua")
         add_files("lua/loslib.c")
     end
 
-    -- add defines
+    -- add definitions
     add_defines("LUA_COMPAT_5_1", "LUA_COMPAT_5_2", "LUA_COMPAT_5_3", {public = true})
     if is_plat("windows") then
         add_defines("LUA_USE_WINDOWS")

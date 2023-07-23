@@ -21,11 +21,23 @@
 -- imports
 import("core.base.bytes")
 import("core.base.hashset")
+import("core.cache.memcache")
 import("core.project.config")
 import("core.project.policy")
 import("core.project.project")
+import("utils.ci.is_running", {alias = "ci_is_running"})
 import("private.service.client_config")
 import("private.service.remote_cache.client", {alias = "remote_cache_client"})
+
+-- get memcache
+function _memcache()
+    local cache = _g.memcache
+    if not cache then
+        cache = memcache.cache("build_cache")
+        _g.memcache = cache
+    end
+    return cache
+end
 
 -- get exist info
 function _get_existinfo()
@@ -38,21 +50,37 @@ function _get_existinfo()
 end
 
 -- is enabled?
-function is_enabled()
-    local build_cache = _g.build_cache
-    if build_cache == nil then
-        if build_cache == nil and os.isfile(os.projectfile()) then
+function is_enabled(target)
+    local key = tostring(target or "all")
+    local result = _memcache():get2("enabled", key)
+    if result == nil then
+        -- target may be option instance
+        if result == nil and target and target.policy then
+            result = target:policy("build.ccache")
+        end
+        if result == nil and os.isfile(os.projectfile()) then
             local policy = project.policy("build.ccache")
             if policy ~= nil then
-                build_cache = policy
+                result = policy
             end
         end
-        if build_cache == nil then
-            build_cache = config.get("ccache") or false
+        -- disable ccache on ci
+        if result == nil and ci_is_running() then
+            result = false
         end
-        _g.build_cache = build_cache
+        -- disable ccache for msvc, because cl.exe preprocessor is too slower
+        -- @see https://github.com/xmake-io/xmake/issues/3532
+        if result == nil and is_host("windows") and
+            target and target.has_tool and target:has_tool("cxx", "cl") then
+            result = false
+        end
+        if result == nil then
+            result = config.get("ccache")
+        end
+        result = result or false
+        _memcache():set2("enabled", key)
     end
-    return build_cache or false
+    return result
 end
 
 -- is supported?
@@ -232,10 +260,10 @@ function build(program, argv, opt)
         local objectfile_cached, objectfile_infofile = get(cachekey)
         if objectfile_cached then
             os.cp(objectfile_cached, cppinfo.objectfile)
-            -- we need update mtime for incremental compilation
+            -- we need to update mtime for incremental compilation
             -- @see https://github.com/xmake-io/xmake/issues/2620
             os.touch(cppinfo.objectfile, {mtime = os.time()})
-            -- we need get outdata/errdata to show warnings,
+            -- we need to get outdata/errdata to show warnings,
             -- @see https://github.com/xmake-io/xmake/issues/2452
             if objectfile_infofile and os.isfile(objectfile_infofile) then
                 local extrainfo = io.load(objectfile_infofile)

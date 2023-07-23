@@ -22,6 +22,16 @@
 import("core.language.language")
 import("core.cache.global_detectcache")
 
+-- attempt to check it from known flags
+function _check_from_knownargs(flags, opt)
+    local flag = flags[1]:gsub("/", "-")
+    if flag:startswith("-D") or
+       flag:startswith("-U") or
+       flag:startswith("-I") then
+        return true
+    end
+end
+
 -- attempt to check it from the argument list
 function _check_from_arglist(flags, opt)
     local key = "detect.tools.cl.has_flags"
@@ -54,17 +64,18 @@ end
 function _check_try_running(flags, opt)
 
     -- make an stub source file
-    local tmpdir = path.join(os.tmpdir(), "detect")
-    local sourcefile = path.join(tmpdir, "cl_has_flags" .. _get_extension(opt))
+    local snippet = opt.snippet or "int main(int argc, char** argv)\n{return 0;}"
+    local sourcefile = os.tmpfile("cl_has_flags:" .. snippet) .. _get_extension(opt)
     if not os.isfile(sourcefile) then
-        io.writefile(sourcefile, "int main(int argc, char** argv)\n{return 0;}")
+        io.writefile(sourcefile, snippet)
     end
 
     -- check it
     local errors = nil
     return try  {   function ()
+                        local tmpdir = os.tmpdir()
                         local _, errs = os.iorunv(opt.program, table.join("-c", "-nologo", flags, "-Fo" .. os.nuldev(), sourcefile),
-                                            {envs = opt.envs, curdir = tmpdir}) -- we need switch to tmpdir to avoid generating some tmp files, e.g. /Zi -> vc140.pdb
+                                            {envs = opt.envs, curdir = tmpdir}) -- we need to switch to tmpdir to avoid generating some tmp files, e.g. /Zi -> vc140.pdb
                         if errs and #errs:trim() > 0 then
                             return false, errs
                         end
@@ -84,8 +95,13 @@ function main(flags, opt)
 
     -- attempt to check it from the argument list
     opt = opt or {}
-    if not opt.tryrun and _check_from_arglist(flags, opt) then
-        return true
+    if not opt.tryrun then
+        if _check_from_arglist(flags, opt) then
+            return true
+        end
+        if _check_from_knownargs(flags, opt) then
+            return true
+        end
     end
 
     -- try running to check it

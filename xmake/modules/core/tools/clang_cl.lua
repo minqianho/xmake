@@ -23,6 +23,7 @@ inherit("cl")
 import("core.base.option")
 import("core.base.tty")
 import("core.base.colors")
+import("core.project.policy")
 
 -- init it
 function init(self)
@@ -94,14 +95,43 @@ end
 function nf_optimize(self, level)
     local maps =
     {
-        none       = "-O0"
-    ,   fast       = "-O1"
-    ,   faster     = "-O2"
-    ,   fastest    = "-O3"
-    ,   smallest   = "-Oz" -- smaller than -Os
-    ,   aggressive = "-Ofast"
+        none        = "-Od"
+    ,   faster      = "-Ox"
+    ,   fastest     = "-O2"
+    ,   smallest    = "-O1"
+    ,   aggressive  = "-O2 -fp:fast"
     }
     return maps[level]
+end
+
+-- make the c precompiled header flag
+function nf_pcheader(self, pcheaderfile, target)
+    if self:kind() == "cc" then
+        local objectfiles = target:objectfiles()
+        if objectfiles then
+            table.insert(objectfiles, target:pcoutputfile("c") .. ".obj")
+        end
+        return {"-Yu" .. path.filename(pcheaderfile),
+                "-FI" .. path.filename(pcheaderfile),
+                "-I" .. path.directory(pcheaderfile),
+                "-Fp" .. target:pcoutputfile("c")}
+    end
+end
+
+-- make the c++ precompiled header flag
+function nf_pcxxheader(self, pcheaderfile, target)
+    if self:kind() == "cxx" then
+        local objectfiles = target:objectfiles()
+        if objectfiles then
+            table.insert(objectfiles, target:pcoutputfile("cxx") .. ".obj")
+        end
+        -- https://github.com/xmake-io/xmake/issues/3905
+        -- clang-cl need extra include search path
+        return {"-Yu" .. path.filename(pcheaderfile),
+                "-FI" .. path.filename(pcheaderfile),
+                "-I" .. path.directory(pcheaderfile),
+                "-Fp" .. target:pcoutputfile("cxx")}
+    end
 end
 
 -- compile the source file
@@ -128,7 +158,8 @@ function compile(self, sourcefile, objectfile, dependinfo, flags)
             end
 
             -- do compile
-            return os.iorunv(compargv(self, sourcefile, objectfile, compflags))
+            local program, argv = compargv(self, sourcefile, objectfile, compflags)
+            return os.iorunv(program, argv, {envs = self:runenvs()})
         end,
         catch
         {
@@ -164,7 +195,7 @@ function compile(self, sourcefile, objectfile, dependinfo, flags)
         {
             function (ok, outdata, errdata)
                 -- show warnings?
-                if ok and errdata and #errdata > 0 and (option.get("diagnosis") or option.get("warning")) then
+                if ok and errdata and #errdata > 0 and policy.build_warnings() then
                     local lines = errdata:split('\n', {plain = true})
                     if #lines > 0 then
                         local warnings = table.concat(table.slice(lines, 1, (#lines > 8 and 8 or #lines)), "\n")

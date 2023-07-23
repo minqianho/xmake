@@ -39,9 +39,14 @@ sandbox_os.host         = os.host
 sandbox_os.arch         = os.arch
 sandbox_os.subhost      = os.subhost
 sandbox_os.subarch      = os.subarch
+sandbox_os.is_host      = os.is_host
+sandbox_os.is_arch      = os.is_arch
+sandbox_os.is_subhost   = os.is_subhost
+sandbox_os.is_subarch   = os.is_subarch
 sandbox_os.syserror     = os.syserror
 sandbox_os.strerror     = os.strerror
 sandbox_os.exit         = os.exit
+sandbox_os.atexit       = os.atexit
 sandbox_os.date         = os.date
 sandbox_os.time         = os.time
 sandbox_os.args         = os.args
@@ -83,6 +88,7 @@ sandbox_os.SYSERR_UNKNOWN     = os.SYSERR_UNKNOWN
 sandbox_os.SYSERR_NONE        = os.SYSERR_NONE
 sandbox_os.SYSERR_NOT_PERM    = os.SYSERR_NOT_PERM
 sandbox_os.SYSERR_NOT_FILEDIR = os.SYSERR_NOT_FILEDIR
+sandbox_os.SYSERR_NOT_ACCESS  = os.SYSERR_NOT_ACCESS
 
 -- copy file or directory
 function sandbox_os.cp(srcpath, dstpath, opt)
@@ -164,9 +170,9 @@ function sandbox_os.vln(srcpath, dstpath)
 end
 
 -- try to copy file or directory
-function sandbox_os.trycp(srcpath, dstpath)
+function sandbox_os.trycp(srcpath, dstpath, opt)
     assert(srcpath and dstpath)
-    return os.cp(vformat(srcpath), vformat(dstpath))
+    return os.cp(vformat(srcpath), vformat(dstpath), opt)
 end
 
 -- try to move file or directory

@@ -144,7 +144,9 @@ function _load_require(require_str, requires_extra, parentinfo)
     end
 
     -- get required building configurations
-    local require_build_configs = require_extra.configs or require_extra.config
+    -- we need to clone a new configs object, because the whole requireinfo will be modified later.
+    -- @see https://github.com/xmake-io/xmake-repo/pull/2067
+    local require_build_configs = table.clone(require_extra.configs or require_extra.config)
     if require_extra.debug then
         require_build_configs = require_build_configs or {}
         require_build_configs.debug = true
@@ -153,7 +155,7 @@ function _load_require(require_str, requires_extra, parentinfo)
     -- require packge in the current host platform
     if require_extra.host then
         if is_subhost(core_package.targetplat()) and os.subarch() == core_package.targetarch() then
-            -- we need pass plat/arch to avoid repeat installation
+            -- we need to pass plat/arch to avoid repeat installation
             -- @see https://github.com/xmake-io/xmake/issues/1579
         else
             require_extra.plat = os.subhost()
@@ -211,9 +213,10 @@ end
 
 -- load package package from repositories
 function _load_package_from_repository(packagename, opt)
+    opt = opt or {}
     local packagedir, repo = repository.packagedir(packagename, opt)
     if packagedir then
-        return core_package.load_from_repository(packagename, repo, packagedir)
+        return core_package.load_from_repository(packagename, packagedir, {plat = opt.plat, arch = opt.arch, repo = repo})
     end
 end
 
@@ -305,7 +308,12 @@ function _add_package_configurations(package)
         package:add("configs", "debug", {builtin = true, description = "Enable debug symbols.", default = false, type = "boolean"})
     end
     if package:extraconf("configs", "shared", "default") == nil then
-        package:add("configs", "shared", {builtin = true, description = "Build shared library.", default = false, type = "boolean"})
+        -- we always use static library if it's for wasm platform
+        local readonly
+        if package:is_plat("wasm") then
+            readonly = true
+        end
+        package:add("configs", "shared", {builtin = true, description = "Build shared library.", default = false, readonly = readonly, type = "boolean"})
     end
     if package:extraconf("configs", "pic", "default") == nil then
         package:add("configs", "pic", {builtin = true, description = "Enable the position independent code.", default = true, type = "boolean"})
@@ -354,10 +362,13 @@ function _select_package_version(package, requireinfo, locked_requireinfo)
     local version = nil
     local require_version = requireinfo.version
     local require_verify  = requireinfo.verify
-    if (not package:get("versions") or require_verify == false) and semver.is_valid(require_version) then
+    if (not package:get("versions") or require_verify == false)
+        and (semver.is_valid(require_version) or semver.is_valid_range(require_version)) then
         -- no version list in package() or need not verify sha256sum? try selecting this version directly
-        -- @see https://github.com/xmake-io/xmake/issues/930
+        -- @see
+        -- https://github.com/xmake-io/xmake/issues/930
         -- https://github.com/xmake-io/xmake/issues/1009
+        -- https://github.com/xmake-io/xmake/issues/3551
         version = require_version
         source = "version"
     elseif #package:versions() > 0 then -- select version?
@@ -367,7 +378,7 @@ function _select_package_version(package, requireinfo, locked_requireinfo)
         if require_version and #require_version == 40 and require_version:match("%w+") then
             version, source = require_version, "commit"
         else
-            version, source = require_version ~= "latest" and require_version or "master", "branch"
+            version, source = require_version ~= "latest" and require_version or "@default", "branch"
         end
     end
     -- local source package? we use a phony version
@@ -481,23 +492,33 @@ function _init_requireinfo(requireinfo, package, opt)
         end
         requireinfo.configs.lto = requireinfo.configs.lto or project.policy("build.optimization.lto")
     end
-    -- but we will ignore some configs for buildhash in the headeronly package
-    if package:is_headeronly() then
+    -- but we will ignore some configs for buildhash in the headeronly and host/binary package
+    if package:is_headeronly() or (package:is_binary() and not package:is_cross()) then
         requireinfo.ignored_configs = {"vs_runtime", "toolchains", "lto", "pic"}
     end
 end
 
 -- finish requireinfo
 function _finish_requireinfo(requireinfo, package)
+    -- we need to synchronise the plat/arch inherited from the parent package as early as possible
+    if requireinfo.plat then
+        package:plat_set(requireinfo.plat)
+    end
+    if requireinfo.arch then
+        package:arch_set(requireinfo.arch)
+    end
     requireinfo.configs = requireinfo.configs or {}
     if not package:is_headeronly() then
         if requireinfo.configs.vs_runtime == nil and package:is_plat("windows") then
             requireinfo.configs.vs_runtime = "MT"
         end
     end
-    -- we need ensure readonly configs
+    -- we need to ensure readonly configs
     for _, name in ipairs(table.keys(requireinfo.configs)) do
-        if package:extraconf("configs", name, "readonly") then
+        local current = requireinfo.configs[name]
+        local default = package:extraconf("configs", name, "default")
+        if package:extraconf("configs", name, "readonly") and current ~= default then
+            wprint("configs.%s is readonly in package(%s), it's always %s", name, package:name(), default)
             -- package:config() will use default value after loading package
             requireinfo.configs[name] = nil
         end
@@ -554,7 +575,6 @@ function _merge_requireinfo(requireinfo, requirepath)
         if requireconf_extra then
             -- preprocess requireconf_extra, (debug, override ..)
             local override = requireconf_extra.override
-            requireconf_extra.override = nil
             if requireconf_extra.debug then
                 requireconf_extra.configs = requireconf_extra.configs or {}
                 requireconf_extra.configs.debug = true
@@ -707,6 +727,17 @@ end
 -- load required packages
 function _load_package(packagename, requireinfo, opt)
 
+    -- check circular dependency
+    opt = opt or {}
+    if opt.requirepath then
+        local splitinfo = opt.requirepath:split(".", {plain = true})
+        if #splitinfo > 3 and
+            splitinfo[1] == splitinfo[#splitinfo - 1] and
+            splitinfo[2] == splitinfo[#splitinfo] then
+            raise("circular dependency(%s) detected in package(%s)!", opt.requirepath, splitinfo[1])
+        end
+    end
+
     -- strip trailng ~tag, e.g. zlib~debug
     local displayname
     if packagename:find('~', 1, true) then
@@ -734,7 +765,10 @@ function _load_package(packagename, requireinfo, opt)
     local from_repo = false
     if not package then
         package = _load_package_from_repository(packagename, {
-            name = requireinfo.reponame, locked_repo = locked_requireinfo and locked_requireinfo.repo})
+            plat = requireinfo.plat,
+            arch = requireinfo.arch,
+            name = requireinfo.reponame,
+            locked_repo = locked_requireinfo and locked_requireinfo.repo})
         if package then
             from_repo = true
         end
@@ -818,7 +852,7 @@ function _load_package(packagename, requireinfo, opt)
     -- check package configurations
     _check_package_configurations(package)
 
-    -- save artifacts info, we need add it at last before buildhash need depend on package configurations
+    -- save artifacts info, we need to add it at last before buildhash need depend on package configurations
     -- it will switch to install precompiled binary package from xmake-mirror/build-artifacts
     if from_repo and not option.get("build") and not requireinfo.build then
         local artifacts_manifest = repository.artifacts_manifest(packagename, version)
@@ -831,6 +865,11 @@ function _load_package(packagename, requireinfo, opt)
     local on_load = package:script("load")
     if on_load then
         on_load(package)
+    end
+
+    -- load all components
+    for _, component in pairs(package:components()) do
+        component:_load()
     end
 
     -- load environments from the manifest to enable the environments of on_install()
@@ -900,7 +939,7 @@ function _get_parents_str(package)
     local parents = package:parents()
     if parents then
         local parentnames = {}
-        for _, parent in pairs(parents) do
+        for _, parent in ipairs(parents) do
             table.insert(parentnames, parent:displayname())
         end
         if #parentnames == 0 then
@@ -930,7 +969,7 @@ function _check_package_depconflicts(package)
         local key = _get_packagekey(dep:name(), dep:requireinfo())
         local prevkey = packagekeys[dep:name()]
         if prevkey then
-            assert(key == prevkey, "package(%s): conflict dependences with package(%s)!", key, prevkey)
+            assert(key == prevkey, "package(%s): conflict dependences with package(%s) in %s!", key, prevkey, package:name())
         else
             packagekeys[dep:name()] = key
         end
@@ -950,22 +989,20 @@ end
 -- @see https://github.com/xmake-io/xmake/issues/2719
 function _compatible_with_previous_librarydeps(package, opt)
 
-    -- skip to check compatibility?
+    -- skip to check compatibility if installation has been finished
     opt = opt or {}
-    if opt.check_compatibility == false then
+    if opt.install_finished then
         return true
-    end
-
-    -- has been checked?
-    local compatible_checked = package:data("librarydeps.compatible_checked")
-    if compatible_checked then
-        return
     end
 
     -- check strict compatibility for librarydeps?
     local strict_compatibility = project.policy("package.librarydeps.strict_compatibility")
     if strict_compatibility == nil then
         strict_compatibility = package:policy("package.librarydeps.strict_compatibility")
+    end
+    -- and we can disable it manually, @see https://github.com/xmake-io/xmake/pull/3738
+    if strict_compatibility == false then
+       return true
     end
 
     -- compute the buildhash for current librarydeps
@@ -1037,13 +1074,17 @@ end
 
 -- this package should be install?
 function should_install(package, opt)
+    opt = opt or {}
     if package:is_template() then
         return false
+    end
+    if not opt.install_finished and package:policy("package.install_always") then
+        return true
     end
     if package:exists() and _compatible_with_previous_librarydeps(package, opt) then
         return false
     end
-    -- we need not install it if this package need only be fetched
+    -- we don't need to install it if this package only need to be fetched
     if package:is_fetchonly() then
         return false
     end
@@ -1054,7 +1095,7 @@ function should_install(package, opt)
     end
     if package:parents() then
         -- if all the packages that depend on it already exist, then there is no need to install it
-        for _, parent in pairs(package:parents()) do
+        for _, parent in ipairs(package:parents()) do
             if should_install(parent, opt) and not parent:exists() then
                 return true
             end

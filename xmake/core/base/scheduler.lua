@@ -360,6 +360,18 @@ function scheduler:_co_groups_resume()
     return resumed_count
 end
 
+-- get profiler
+function scheduler:_profiler()
+    local profiler = self._PROFILE
+    if profiler == nil then
+        profiler = require("base/profiler")
+        if not profiler:enabled() then
+            profiler = false
+        end
+    end
+    return profiler or nil
+end
+
 -- start a new coroutine task
 function scheduler:co_start(cotask, ...)
     return self:co_start_named(nil, cotask, ...)
@@ -383,6 +395,10 @@ function scheduler:co_start_withopt(opt, cotask, ...)
     -- start coroutine
     local co
     co = _coroutine.new(coname, coroutine.create(function(...)
+        local profiler = self:_profiler()
+        if profiler and profiler:enabled() then
+            profiler:start()
+        end
         self:_co_curdir_update()
         self:_co_curenvs_update()
         cotask(...)
@@ -427,7 +443,7 @@ function scheduler:co_suspend(...)
     -- suspend it
     local results = table.pack(coroutine.yield(...))
 
-    -- if the current directory has been changed? restore it
+    -- Has the current directory been changed? restore it
     local running = assert(self:co_running())
     local curdir = self._CO_CURDIR_HASH
     local olddir = self._CO_CURDIRS and self._CO_CURDIRS[running] or nil
@@ -435,7 +451,7 @@ function scheduler:co_suspend(...)
         os.cd(olddir[2])
     end
 
-    -- if the current environments has been changed? restore it
+    -- Has the current environments been changed? restore it
     local curenvs = self._CO_CURENVS_HASH
     local oldenvs = self._CO_CURENVS and self._CO_CURENVS[running] or nil
     if oldenvs and curenvs ~= oldenvs[1] and running:is_isolated() then -- hash changed?
@@ -454,7 +470,7 @@ end
 -- sleep some times (ms)
 function scheduler:co_sleep(ms)
 
-    -- we need not do sleep
+    -- we don't need to sleep
     if ms == 0 then
         return true
     end
@@ -954,6 +970,20 @@ function scheduler:runloop()
                 if eventfunc then
                     ok, errors = eventfunc(self, obj, objevents)
                     if not ok then
+                        -- TODO
+                        --
+                        -- This causes a direct exit from the entire runloop and
+                        -- a quick escape from nested try-catch blocks and coroutines groups.
+                        --
+                        -- So some try-catch cannot catch these errors, such as when a build fails (in build group).
+                        -- @see https://github.com/xmake-io/xmake/issues/3401
+                        --
+                        -- In theory, we should handle it better. For example, if there is a group that is waiting,
+                        -- we should notify the other concurrent threads to exit quickly and then let the group concurrent threads to throw the error.
+                        -- That way the outside try-catch can continue to catch it.
+                        --
+                        -- But implementing it is more complicated and I haven't come up with a solution to let other concurrent processes exit quickly,
+                        -- especially if the child process is waiting and we need to notify it of the end quickly as well.
                         break
                     end
                 end

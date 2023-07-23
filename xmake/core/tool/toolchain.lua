@@ -69,12 +69,22 @@ end
 
 -- get toolchain platform
 function _instance:plat()
-    return self:config("plat")
+    return self._PLAT or self:config("plat")
+end
+
+-- set toolchain platform
+function _instance:plat_set(plat)
+    self._PLAT = plat
 end
 
 -- get toolchain architecture
 function _instance:arch()
-    return self:config("arch")
+    return self._ARCH or self:config("arch")
+end
+
+-- set toolchain architecture
+function _instance:arch_set(arch)
+    self._ARCH = arch
 end
 
 -- the current platform is belong to the given platforms?
@@ -268,6 +278,11 @@ function _instance:check()
     return checkok
 end
 
+-- do load manually, it will call on_load()
+function _instance:load()
+    self:_load()
+end
+
 -- check cross toolchain
 function _instance:check_cross_toolchain()
     return sandbox_module.import("toolchains.cross.check", {rootdir = os.programdir(), anonymous = true})(self)
@@ -301,7 +316,15 @@ end
 
 -- save toolchain to file
 function _instance:savefile(filepath)
-    return io.save(filepath, {name = self:name(), info = self:info():info(), cachekey = self:cachekey(), configs = self._CONFIGS})
+    if not self:_is_loaded() then
+        os.raise("we can only save toolchain(%s) after it has been loaded!", self:name())
+    end
+    -- we strip on_load/on_check scripts to solve some issues
+    -- @see https://github.com/xmake-io/xmake/issues/3774
+    local info = table.clone(self:info():info())
+    info.load = nil
+    info.check = nil
+    return io.save(filepath, {name = self:name(), info = info, cachekey = self:cachekey(), configs = self._CONFIGS})
 end
 
 -- on check (builtin)
@@ -322,7 +345,7 @@ function _instance:_on_load()
     return on_load
 end
 
--- do load, @note we need load it repeatly for each architectures
+-- do load, @note we need to load it repeatly for each architectures
 function _instance:_load()
     local info = self:info()
     if not info:get("__loaded") and not info:get("__loading") then
@@ -337,6 +360,11 @@ function _instance:_load()
         end
         info:set("__loaded", true)
     end
+end
+
+-- is loaded?
+function _instance:_is_loaded()
+    return self:info():get("__loaded")
 end
 
 -- get the tool description from the tool kind
@@ -428,7 +456,7 @@ function _instance:_checktool(toolkind, toolpath)
     if toolpath then
         local pos = toolpath:find('@', 1, true)
         if pos then
-            -- we need ignore valid path with `@`, e.g. /usr/local/opt/go@1.17/bin/go
+            -- we need to ignore valid path with `@`, e.g. /usr/local/opt/go@1.17/bin/go
             -- https://github.com/xmake-io/xmake/issues/2853
             local prefix = toolpath:sub(1, pos - 1)
             if prefix and not prefix:find("[/\\]") then
@@ -439,7 +467,11 @@ function _instance:_checktool(toolkind, toolpath)
     end
 
     -- find tool program
-    local tool = find_tool(toolpath, {cachekey = cachekey, program = program or toolpath, paths = self:bindir(), envs = self:get("runenvs")})
+    local tool = find_tool(toolpath, {toolchain = self,
+        cachekey = cachekey,
+        program = program or toolpath,
+        paths = self:bindir(),
+        envs = self:get("runenvs")})
     if tool then
         program = tool.program
         toolname = toolname or tool.name
@@ -666,7 +698,7 @@ function toolchain.load_fromfile(filepath, opt)
     local scope_opt = {interpreter = toolchain._interpreter(), deduplicate = true, enable_filter = true}
     local info = scopeinfo.new("toolchain", fileinfo.info, scope_opt)
     local instance = toolchain.load_withinfo(fileinfo.name, info, opt)
-    -- we need skip check
+    -- we need to skip check
     instance._CHECKED = true
     return instance
 end
@@ -721,7 +753,7 @@ function toolchain.tool(toolchains, toolkind, opt)
     if program and type(program) == "string" then
         local pos = program:find('@', 1, true)
         if pos then
-            -- we need ignore valid path with `@`, e.g. /usr/local/opt/go@1.17/bin/go
+            -- we need to ignore valid path with `@`, e.g. /usr/local/opt/go@1.17/bin/go
             -- https://github.com/xmake-io/xmake/issues/2853
             local prefix = program:sub(1, pos - 1)
             if prefix and not prefix:find("[/\\]") then

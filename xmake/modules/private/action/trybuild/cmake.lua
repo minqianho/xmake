@@ -25,6 +25,7 @@ import("core.tool.toolchain")
 import("core.platform.platform")
 import("lib.detect.find_file")
 import("lib.detect.find_tool")
+import("private.utils.toolchain", {alias = "toolchain_utils"})
 
 -- get build directory
 function _get_buildir()
@@ -46,6 +47,58 @@ function _get_buildenv(key)
         value = platform.tool(key, config.plat())
     end
     return value
+end
+
+-- get msvc
+function _get_msvc()
+    local msvc = toolchain.load("msvc")
+    assert(msvc:check(), "vs not found!") -- we need to check vs envs if it has been not checked yet
+    return msvc
+end
+
+-- get msvc run environments
+function _get_msvc_runenvs()
+    return os.joinenvs(_get_msvc():runenvs())
+end
+
+-- translate paths
+function _translate_paths(paths)
+    if is_host("windows") then
+        if type(paths) == "string" then
+            return (paths:gsub("\\", "/"))
+        elseif type(paths) == "table" then
+            local result = {}
+            for _, p in ipairs(paths) do
+                table.insert(result, (p:gsub("\\", "/")))
+            end
+            return result
+        end
+    end
+    return paths
+end
+
+-- translate bin path
+function _translate_bin_path(bin_path)
+    if is_host("windows") and bin_path then
+        bin_path = bin_path:gsub("\\", "/")
+        if not bin_path:find(string.ipattern("%.exe$")) and
+           not bin_path:find(string.ipattern("%.cmd$")) and
+           not bin_path:find(string.ipattern("%.bat$")) then
+            bin_path = bin_path .. ".exe"
+        end
+    end
+    return bin_path
+end
+
+-- is cross compilation?
+function _is_cross_compilation()
+    if not is_plat(os.subhost()) then
+        return true
+    end
+    if is_plat("macosx") and not is_arch(os.subarch()) then
+        return true
+    end
+    return false
 end
 
 -- get configs for windows
@@ -151,14 +204,11 @@ end
 
 -- get configs for wasm
 function _get_configs_for_wasm(configs)
-    local emsdk = os.getenv("EMSDK")
-    local emscripten_cmakefile
-    if emsdk and os.isdir(emsdk) then
-        emscripten_cmakefile = find_file("Emscripten.cmake", path.join(emsdk, "*", "emscripten/cmake/Modules/Platform"))
-    end
-    if emscripten_cmakefile then
-        table.insert(configs, "-DCMAKE_TOOLCHAIN_FILE=" .. emscripten_cmakefile)
-    end
+    local emsdk = find_emsdk()
+    assert(emsdk and emsdk.emscripten, "emscripten not found!")
+    local emscripten_cmakefile = find_file("Emscripten.cmake", path.join(emsdk.emscripten, "cmake/Modules/Platform"))
+    assert(emscripten_cmakefile, "Emscripten.cmake not found!")
+    table.insert(configs, "-DCMAKE_TOOLCHAIN_FILE=" .. emscripten_cmakefile)
     assert(emscripten_cmakefile, "Emscripten.cmake not found!")
     _get_configs_for_generic(configs)
 end
@@ -168,13 +218,33 @@ function _get_configs_for_cross(configs)
     local envs                     = {}
     local cflags                   = table.join(table.wrap(_get_buildenv("cxflags")), _get_buildenv("cflags"))
     local cxxflags                 = table.join(table.wrap(_get_buildenv("cxflags")), _get_buildenv("cxxflags"))
-    local sdkdir                   = _get_buildenv("sdk")
-    envs.CMAKE_C_COMPILER          = _get_buildenv("cc")
-    envs.CMAKE_CXX_COMPILER        = _get_buildenv("cxx")
-    envs.CMAKE_ASM_COMPILER        = _get_buildenv("as")
-    envs.CMAKE_AR                  = _get_buildenv("ar")
-    envs.CMAKE_LINKER              = _get_buildenv("ld")
-    envs.CMAKE_RANLIB              = _get_buildenv("ranlib")
+    local sdkdir                   = _translate_paths(_get_buildenv("sdk"))
+    envs.CMAKE_C_COMPILER          = _translate_bin_path(_get_buildenv("cc"))
+    envs.CMAKE_CXX_COMPILER        = _translate_bin_path(_get_buildenv("cxx"))
+    envs.CMAKE_ASM_COMPILER        = _translate_bin_path(_get_buildenv("as"))
+    envs.CMAKE_AR                  = _translate_bin_path(_get_buildenv("ar"))
+    -- https://github.com/xmake-io/xmake-repo/pull/1096
+    local cxx = envs.CMAKE_CXX_COMPILER
+    if cxx and (cxx:find("clang", 1, true) or cxx:find("gcc", 1, true)) then
+        local dir = path.directory(cxx)
+        local name = path.filename(cxx)
+        name = name:gsub("clang$", "clang++")
+        name = name:gsub("clang%-", "clang++-")
+        name = name:gsub("gcc$", "g++")
+        name = name:gsub("gcc%-", "g++-")
+        envs.CMAKE_CXX_COMPILER = _translate_bin_path(dir and path.join(dir, name) or name)
+    end
+    -- @note The link command line is set in Modules/CMake{C,CXX,Fortran}Information.cmake and defaults to using the compiler, not CMAKE_LINKER,
+    -- so we need to set CMAKE_CXX_LINK_EXECUTABLE to use CMAKE_LINKER as linker.
+    --
+    -- https://github.com/xmake-io/xmake-repo/pull/1039
+    -- https://stackoverflow.com/questions/1867745/cmake-use-a-custom-linker/25274328#25274328
+    envs.CMAKE_LINKER              = _translate_bin_path(_get_buildenv("ld"))
+    local ld = envs.CMAKE_LINKER
+    if ld and (ld:find("g++", 1, true) or ld:find("clang++", 1, true)) then
+        envs.CMAKE_CXX_LINK_EXECUTABLE = "<CMAKE_LINKER> <FLAGS> <CMAKE_CXX_LINK_FLAGS> <LINK_FLAGS> <OBJECTS> -o <TARGET> <LINK_LIBRARIES>"
+    end
+    envs.CMAKE_RANLIB              = _translate_bin_path(_get_buildenv("ranlib"))
     envs.CMAKE_C_FLAGS             = table.concat(cflags, ' ')
     envs.CMAKE_CXX_FLAGS           = table.concat(cxxflags, ' ')
     envs.CMAKE_ASM_FLAGS           = table.concat(table.wrap(_get_buildenv("asflags")), ' ')
@@ -197,11 +267,115 @@ function _get_configs_for_cross(configs)
     end
 end
 
--- get configs
-function _get_configs(artifacts_dir)
+-- get configs for host toolchain
+function _get_configs_for_host_toolchain(configs)
+    local envs                     = {}
+    local cflags                   = table.join(table.wrap(_get_buildenv("cxflags")), _get_buildenv("cflags"))
+    local cxxflags                 = table.join(table.wrap(_get_buildenv("cxflags")), _get_buildenv("cxxflags"))
+    local sdkdir                   = _translate_paths(_get_buildenv("sdk"))
+    envs.CMAKE_C_COMPILER          = _translate_bin_path(_get_buildenv("cc"))
+    envs.CMAKE_CXX_COMPILER        = _translate_bin_path(_get_buildenv("cxx"))
+    envs.CMAKE_ASM_COMPILER        = _translate_bin_path(_get_buildenv("as"))
+    envs.CMAKE_AR                  = _translate_bin_path(_get_buildenv("ar"))
+    -- https://github.com/xmake-io/xmake-repo/pull/1096
+    local cxx = envs.CMAKE_CXX_COMPILER
+    if cxx and (cxx:find("clang", 1, true) or cxx:find("gcc", 1, true)) then
+        local dir = path.directory(cxx)
+        local name = path.filename(cxx)
+        name = name:gsub("clang$", "clang++")
+        name = name:gsub("clang%-", "clang++-")
+        name = name:gsub("gcc$", "g++")
+        name = name:gsub("gcc%-", "g++-")
+        envs.CMAKE_CXX_COMPILER = _translate_bin_path(dir and path.join(dir, name) or name)
+    end
+    -- @note The link command line is set in Modules/CMake{C,CXX,Fortran}Information.cmake and defaults to using the compiler, not CMAKE_LINKER,
+    -- so we need to set CMAKE_CXX_LINK_EXECUTABLE to use CMAKE_LINKER as linker.
+    --
+    -- https://github.com/xmake-io/xmake-repo/pull/1039
+    -- https://stackoverflow.com/questions/1867745/cmake-use-a-custom-linker/25274328#25274328
+    envs.CMAKE_LINKER              = _translate_bin_path(_get_buildenv("ld"))
+    local ld = envs.CMAKE_LINKER
+    if ld and (ld:find("g++", 1, true) or ld:find("clang++", 1, true)) then
+        envs.CMAKE_CXX_LINK_EXECUTABLE = "<CMAKE_LINKER> <FLAGS> <CMAKE_CXX_LINK_FLAGS> <LINK_FLAGS> <OBJECTS> -o <TARGET> <LINK_LIBRARIES>"
+    end
+    envs.CMAKE_RANLIB              = _translate_bin_path(_get_buildenv("ranlib"))
+    envs.CMAKE_C_FLAGS             = table.concat(cflags, ' ')
+    envs.CMAKE_CXX_FLAGS           = table.concat(cxxflags, ' ')
+    envs.CMAKE_ASM_FLAGS           = table.concat(table.wrap(_get_buildenv("asflags")), ' ')
+    envs.CMAKE_STATIC_LINKER_FLAGS = table.concat(table.wrap(_get_buildenv("arflags")), ' ')
+    envs.CMAKE_EXE_LINKER_FLAGS    = table.concat(table.wrap(_get_buildenv("ldflags")), ' ')
+    envs.CMAKE_SHARED_LINKER_FLAGS = table.concat(table.wrap(_get_buildenv("shflags")), ' ')
+    -- we don't need to set it as cross compilation if we just pass toolchain
+    -- https://github.com/xmake-io/xmake/issues/2170
+    if not is_plat(os.subhost()) then
+        envs.CMAKE_SYSTEM_NAME     = "Linux"
+    end
+    for k, v in pairs(envs) do
+        table.insert(configs, "-D" .. k .. "=" .. v)
+    end
+end
 
-    -- add prefix
-    local configs = {"-DCMAKE_INSTALL_PREFIX=" .. artifacts_dir, "-DCMAKE_INSTALL_LIBDIR=" .. path.join(artifacts_dir, "lib")}
+-- get cmake generator for msvc
+function _get_cmake_generator_for_msvc()
+    local vsvers =
+    {
+        ["2022"] = "17",
+        ["2019"] = "16",
+        ["2017"] = "15",
+        ["2015"] = "14",
+        ["2013"] = "12",
+        ["2012"] = "11",
+        ["2010"] = "10",
+        ["2008"] = "9"
+    }
+    local vs = _get_msvc():config("vs") or config.get("vs")
+    assert(vsvers[vs], "Unknown Visual Studio version: '" .. tostring(vs) .. "' set in project.")
+    return "Visual Studio " .. vsvers[vs] .. " " .. vs
+end
+
+-- get configs for cmake generator
+function _get_configs_for_generator(configs, opt)
+    opt     = opt or {}
+    configs = configs or {}
+    local cmake_generator = opt.cmake_generator
+    if cmake_generator then
+        if cmake_generator:find("Visual Studio", 1, true) then
+            cmake_generator = _get_cmake_generator_for_msvc()
+        end
+        table.insert(configs, "-G")
+        table.insert(configs, cmake_generator)
+    elseif is_plat("mingw") and is_subhost("msys") then
+        table.insert(configs, "-G")
+        table.insert(configs, "MSYS Makefiles")
+    elseif is_plat("mingw") and is_subhost("windows") then
+        table.insert(configs, "-G")
+        table.insert(configs, "MinGW Makefiles")
+    elseif is_plat("windows") then
+        table.insert(configs, "-G")
+        table.insert(configs, _get_cmake_generator_for_msvc())
+    elseif is_plat("wasm") and is_subhost("windows") then
+        table.insert(configs, "-G")
+        table.insert(configs, "MinGW Makefiles")
+    else
+        table.insert(configs, "-G")
+        table.insert(configs, "Unix Makefiles")
+    end
+end
+
+-- get configs for installation
+function _get_configs_for_install(configs, opt)
+    -- @see https://cmake.org/cmake/help/v3.14/module/GNUInstallDirs.html
+    -- LIBDIR: object code libraries (lib or lib64 or lib/<multiarch-tuple> on Debian)
+    --
+    table.insert(configs, "-DCMAKE_INSTALL_PREFIX=" .. opt.artifacts_dir)
+    table.insert(configs, "-DCMAKE_INSTALL_LIBDIR:PATH=lib")
+end
+
+-- get configs
+function _get_configs(opt)
+    local configs = {}
+    _get_configs_for_install(configs, opt)
+    _get_configs_for_generator(configs, opt)
     if is_plat("windows") then
         _get_configs_for_windows(configs)
     elseif is_plat("android") then
@@ -214,8 +388,16 @@ function _get_configs(artifacts_dir)
         _get_configs_for_mingw(configs)
     elseif is_plat("wasm") then
         _get_configs_for_wasm(configs)
-    elseif not is_plat(os.subhost()) then
+    elseif _is_cross_compilation() then
         _get_configs_for_cross(configs)
+    elseif config.get("toolchain") then
+        -- we still need find system libraries,
+        -- it just pass toolchain environments if the toolchain is compatible with host
+        if toolchain_utils.is_compatible_with_host(config.get("toolchain")) then
+            _get_configs_for_host_toolchain(configs)
+        else
+            _get_configs_for_cross(configs)
+        end
     end
 
     -- enable verbose?
@@ -226,14 +408,58 @@ function _get_configs(artifacts_dir)
     -- add extra user configs
     local tryconfigs = config.get("tryconfigs")
     if tryconfigs then
-        for _, opt in ipairs(os.argv(tryconfigs)) do
-            table.insert(configs, tostring(opt))
+        for _, item in ipairs(os.argv(tryconfigs)) do
+            table.insert(configs, tostring(item))
         end
     end
 
     -- add build directory
     table.insert(configs, '..')
     return configs
+end
+
+-- build for msvc
+function _build_for_msvc(opt)
+    local runenvs = _get_msvc_runenvs()
+    local msbuild = find_tool("msbuild", {envs = runenvs})
+    local slnfile = assert(find_file("*.sln", os.curdir()), "*.sln file not found!")
+    os.vexecv(msbuild.program, {slnfile, "-nologo", "-t:Build", "-m", "-p:Configuration=" .. (is_mode("debug") and "Debug" or "Release"), "-p:Platform=" .. (is_arch("x64") and "x64" or "Win32")}, {envs = runenvs})
+    local projfile = os.isfile("INSTALL.vcxproj") and "INSTALL.vcxproj" or "INSTALL.vcproj"
+    if os.isfile(projfile) then
+        os.vexecv(msbuild.program, {projfile, "/property:configuration=" .. (is_mode("debug") and "Debug" or "Release")}, {envs = runenvs})
+    end
+end
+
+-- build for make
+function _build_for_make(opt)
+    local argv = {"-j" .. option.get("jobs")}
+    if option.get("verbose") then
+        table.insert(argv, "VERBOSE=1")
+    end
+    if is_host("bsd") then
+        os.vexecv("gmake", argv)
+        os.vexecv("gmake", {"install"})
+    else
+        os.vexecv("make", argv)
+        os.vexecv("make", {"install"})
+    end
+end
+
+-- build for ninja
+function _build_for_ninja(opt)
+    local njob = option.get("jobs") or tostring(os.default_njob())
+    local ninja = assert(find_tool("ninja"), "ninja not found!")
+    local argv = {}
+    if option.get("diagnosis") then
+        table.insert(argv, "-v")
+    end
+    table.insert(argv, "-j")
+    table.insert(argv, njob)
+    local envs
+    if is_plat("windows") then
+        envs = _get_msvc_runenvs()
+    end
+    os.vexecv(ninja.program, argv, {envs = envs})
 end
 
 -- detect build-system and configuration file
@@ -249,7 +475,7 @@ function clean()
         if configfile then
             local oldir = os.cd(buildir)
             if is_plat("windows") then
-                local runenvs = toolchain.load("msvc"):runenvs()
+                local runenvs = _get_msvc_runenvs()
                 local msbuild = find_tool("msbuild", {envs = runenvs})
                 os.vexecv(msbuild.program, {configfile, "-nologo", "-t:Clean", "-p:Configuration=" .. (is_mode("debug") and "Debug" or "Release"), "-p:Platform=" .. (is_arch("x64") and "x64" or "Win32")}, {envs = runenvs})
             else
@@ -263,43 +489,44 @@ end
 -- do build
 function build()
 
+    -- get cmake
+    local cmake = assert(find_tool("cmake"), "cmake not found!")
+
     -- get artifacts directory
+    local opt = {}
     local artifacts_dir = _get_artifacts_dir()
     if not os.isdir(artifacts_dir) then
         os.mkdir(artifacts_dir)
     end
     os.cd(_get_buildir())
+    opt.artifacts_dir = artifacts_dir
 
-    -- generate makefile
-    local cmake = assert(find_tool("cmake"), "cmake not found!")
-    local configfile = find_file("[mM]akefile", os.curdir()) or (is_plat("windows") and find_file("*.sln", os.curdir()))
-    if not configfile or os.mtime(config.filepath()) > os.mtime(configfile) then
-        os.vexecv(cmake.program, _get_configs(artifacts_dir))
-    end
+    -- exists $CMAKE_GENERATOR? use it
+    opt.cmake_generator = os.getenv("CMAKE_GENERATOR")
+
+    -- do configure
+    os.vexecv(cmake.program, _get_configs(opt))
 
     -- do build
-    if is_plat("windows") then
-        local runenvs = toolchain.load("msvc"):runenvs()
-        local msbuild = find_tool("msbuild", {envs = runenvs})
-        local slnfile = assert(find_file("*.sln", os.curdir()), "*.sln file not found!")
-        os.vexecv(msbuild.program, {slnfile, "-nologo", "-t:Build", "-m", "-p:Configuration=" .. (is_mode("debug") and "Debug" or "Release"), "-p:Platform=" .. (is_arch("x64") and "x64" or "Win32")}, {envs = runenvs})
-        local projfile = os.isfile("INSTALL.vcxproj") and "INSTALL.vcxproj" or "INSTALL.vcproj"
-        if os.isfile(projfile) then
-            os.vexecv(msbuild.program, {projfile, "/property:configuration=" .. (is_mode("debug") and "Debug" or "Release")}, {envs = runenvs})
+    local cmake_generator = opt.cmake_generator
+    if cmake_generator then
+        if cmake_generator:find("Visual Studio", 1, true) then
+            _build_for_msvc(opt)
+        elseif cmake_generator == "Ninja" then
+            _build_for_ninja(opt)
+        elseif cmake_generator:find("Makefiles", 1, true) then
+            _build_for_make(opt)
+        else
+            raise("unknown cmake generator(%s)!", cmake_generator)
         end
     else
-        local argv = {"-j" .. option.get("jobs")}
-        if option.get("verbose") then
-            table.insert(argv, "VERBOSE=1")
-        end
-        if is_host("bsd") then
-            os.vexecv("gmake", argv)
-            os.vexecv("gmake", {"install"})
+        if is_plat("windows") then
+            _build_for_msvc(opt)
         else
-            os.vexecv("make", argv)
-            os.vexecv("make", {"install"})
+            _build_for_make(opt)
         end
     end
+
     cprint("output to ${bright}%s", artifacts_dir)
     cprint("${color.success}build ok!")
 end

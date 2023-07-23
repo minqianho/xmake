@@ -67,7 +67,7 @@ function _do_build_file(target, sourcefile, opt)
     -- exists ccache or distcc?
     -- we just show cache/distc to avoid confusion with third-party ccache/distcc
     local prefix = ""
-    if build_cache.is_enabled() and build_cache.is_supported(sourcekind) then
+    if build_cache.is_enabled(target) and build_cache.is_supported(sourcekind) then
         prefix = "cache "
     end
     if distcc_build_client.is_distccjob() and distcc_build_client.singleton():has_freejobs() then
@@ -92,7 +92,15 @@ function _do_build_file(target, sourcefile, opt)
 
         -- update files and values to the dependent file
         dependinfo.values = depvalues
-        table.join2(dependinfo.files, sourcefile, target:pcoutputfile("cxx") or {}, target:pcoutputfile("c"))
+        table.insert(dependinfo.files, sourcefile)
+        local pcoutputfile = target:pcoutputfile("cxx")
+        if target:has_sourcekind("cxx") and pcoutputfile then
+            table.insert(dependinfo.files, pcoutputfile)
+        end
+        local pcoutputfile = target:pcoutputfile("c")
+        if target:has_sourcekind("cc") and pcoutputfile then
+            table.insert(dependinfo.files, pcoutputfile)
+        end
         depend.save(dependinfo, dependfile)
     end
 end

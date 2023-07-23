@@ -116,7 +116,7 @@ function nf_symbols(self, levels, target)
 
             -- check and add symbol output file
             --
-            -- @note we need use `{}` to wrap it to avoid expand it
+            -- @note we need to use `{}` to wrap it to avoid expand it
             -- https://github.com/xmake-io/xmake/issues/2061#issuecomment-1042590085
             local pdbflags = {"-Fd" .. (target:is_static() and symbolfile or path.join(symboldir, "compile." .. path.filename(symbolfile)))}
             if self:has_flags({"-FS", "-Fd" .. os.nuldev() .. ".pdb"}, "cxflags", { flagskey = "-FS -Fd" }) then
@@ -145,7 +145,7 @@ end
 function nf_warning(self, level)
     local maps =
     {
-        none       = "-W0"
+        none       = "-w"
     ,   less       = "-W1"
     ,   more       = "-W3"
     ,   all        = "-W3" -- = "-Wall" will enable too more warnings
@@ -163,7 +163,7 @@ function nf_optimize(self, level)
         none        = "-Od"
     ,   faster      = "-Ox"
     ,   fastest     = "-O2 -fp:fast"
-    ,   smallest    = "-O1 -GL" -- /GL and (/OPT:REF is on by default in linker), we need enable /ltcg
+    ,   smallest    = "-O1 -GL" -- /GL and (/OPT:REF is on by default in linker), we need to enable /ltcg
     ,   aggressive  = "-O2 -fp:fast"
     }
     return maps[level]
@@ -184,6 +184,7 @@ function nf_vectorext(self, extension)
     ,   sse2   = "-arch:SSE2"
     ,   avx    = "-arch:AVX"
     ,   avx2   = "-arch:AVX2"
+    ,   fma    = "-arch:AVX2"
     }
     local flag = maps[extension]
     if flag and self:has_flags(flag, "cxflags") then
@@ -264,7 +265,7 @@ end
 
 -- make the define flag
 function nf_define(self, macro)
-    return "-D" .. macro
+    return {"-D" .. macro}
 end
 
 -- make the undefine flag
@@ -298,13 +299,22 @@ function nf_sysincludedir(self, dir)
     end
 end
 
+-- make the exception flag
+--
+-- e.g.
+-- set_exceptions("cxx")
+-- set_exceptions("no-cxx")
+function nf_exception(self, exp)
+    local maps = {
+        cxx = "/EHsc",
+        ["no-cxx"] = "/EHsc-"
+    }
+    return maps[exp]
+end
+
 -- make the c precompiled header flag
 function nf_pcheader(self, pcheaderfile, target)
-
-    -- for c source file
     if self:kind() == "cc" then
-
-        -- patch objectfile
         local objectfiles = target:objectfiles()
         if objectfiles then
             table.insert(objectfiles, target:pcoutputfile("c") .. ".obj")
@@ -315,11 +325,7 @@ end
 
 -- make the c++ precompiled header flag
 function nf_pcxxheader(self, pcheaderfile, target)
-
-    -- for c++ source file
     if self:kind() == "cxx" then
-
-        -- patch objectfile
         local objectfiles = target:objectfiles()
         if objectfiles then
             table.insert(objectfiles, target:pcoutputfile("cxx") .. ".obj")
@@ -413,6 +419,8 @@ function _preprocess(program, argv, opt)
     local skipped = 0
     local objectfile
     local pdbfile
+    local sourcefile = argv[#argv]
+    local extension = path.extension(sourcefile)
     for _, flag in ipairs(argv) do
         if flag:startswith("-Fo") or flag:startswith("/Fo") then
             objectfile = flag:sub(4)
@@ -433,10 +441,13 @@ function _preprocess(program, argv, opt)
         -- get compiler flags
         if flag == "-showIncludes" or flag == "/showIncludes" or
            (flag:startswith("-I") and #flag > 2) or (flag:startswith("/I") and #flag > 2) or
+           flag:startswith("-external:") or flag:startswith("/external:") then
+            skipped = 1
+        -- @note we cannot ignore precompiled flags when compiling pch, @see https://github.com/xmake-io/xmake/issues/2885
+        elseif not extension:startswith(".h") and (
            flag:startswith("-Yu") or flag:startswith("/Yu") or
            flag:startswith("-FI") or flag:startswith("/FI") or
-           flag:startswith("-Fp") or flag:startswith("/Fp") or
-           flag:startswith("-external:") or flag:startswith("/external:") then
+           flag:startswith("-Fp") or flag:startswith("/Fp")) then
             skipped = 1
         elseif flag == "-I" or flag == "-sourceDependencies" or flag == "/sourceDependencies" then
             skipped = 2
@@ -450,7 +461,6 @@ function _preprocess(program, argv, opt)
             table.insert(flags, flag)
         end
     end
-    local sourcefile = argv[#argv]
     assert(objectfile and sourcefile, "%s: iorunv(%s): invalid arguments!", self, program)
 
     -- is precompiled header?
@@ -483,16 +493,24 @@ function _preprocess(program, argv, opt)
     end
     table.insert(cppflags, sourcefile)
     return try{ function()
-        local outfile = os.tmpfile() .. ".i.out"
+        -- https://github.com/xmake-io/xmake/issues/2902#issuecomment-1326934902
+        local outfile = cppfile
         local errfile = os.tmpfile() .. ".i.err"
+        local inherit_handles_safely = true
+        if not winos.inherit_handles_safely() then
+            outfile = os.tmpfile() .. ".i.out"
+            inherit_handles_safely = false
+        end
         os.execv(program, winos.cmdargv(cppflags), table.join(opt, {stdout = outfile, stderr = errfile}))
         local errdata
         if os.isfile(errfile) then
             errdata = io.readfile(errfile)
         end
-        os.cp(outfile, cppfile)
         os.tryrm(errfile)
-        os.tryrm(outfile)
+        if not inherit_handles_safely then
+            os.cp(outfile, cppfile)
+            os.tryrm(outfile)
+        end
         -- includes information will be output to stderr instead of stdout now
         return {outdata = errdata, errdata = errdata,
                 sourcefile = sourcefile, objectfile = objectfile, cppfile = cppfile, cppflags = flags,
@@ -503,13 +521,14 @@ end
 -- compile preprocessed file
 function _compile_preprocessed_file(program, cppinfo, opt)
     local outdata, errdata = vstool.iorunv(program, winos.cmdargv(table.join(cppinfo.cppflags, "-Fo" .. cppinfo.objectfile, cppinfo.cppfile)), opt)
-    -- we need get warning information from output
+    -- we need to get warning information from output
     cppinfo.outdata = outdata
     cppinfo.errdata = errdata
 end
 
 -- do compile
 function _compile(self, sourcefile, objectfile, compflags, opt)
+    opt = opt or {}
     local function _compile_fallback()
         local program, argv = compargv(self, sourcefile, objectfile, compflags, opt)
         return vstool.iorunv(program, argv, {envs = self:runenvs()})
@@ -520,7 +539,7 @@ function _compile(self, sourcefile, objectfile, compflags, opt)
         cppinfo = distcc_build_client.singleton():compile(program, argv, {envs = self:runenvs(),
             preprocess = _preprocess, compile = _compile_preprocessed_file, compile_fallback = _compile_fallback,
             target = opt.target, tool = self, remote = true})
-    elseif build_cache.is_enabled() and build_cache.is_supported(self:kind()) then
+    elseif build_cache.is_enabled(opt.target) and build_cache.is_supported(self:kind()) then
         local program, argv = compargv(self, sourcefile, objectfile, compflags, table.join(opt, {rawargs = true}))
         cppinfo = build_cache.build(program, argv, {envs = self:runenvs(),
             preprocess = _preprocess, compile = _compile_preprocessed_file, compile_fallback = _compile_fallback,
@@ -573,7 +592,7 @@ function compile(self, sourcefile, objectfile, dependinfo, flags, opt)
                 end
             end
 
-            -- we need show full file path to goto error position if xmake is called in vstudio
+            -- we need to show full file path to goto error position if xmake is called in vstudio
             -- https://github.com/xmake-io/xmake/issues/1049
             if _is_in_vstudio() then
                 if compflags == flags then

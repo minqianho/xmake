@@ -117,11 +117,8 @@ function _remove_packages(packages)
 
     -- do configure first
     local config_argv = {"f", "-c", "--require=n"}
-    if option.get("verbose") then
-        table.insert(config_argv, "-v")
-    end
     if option.get("diagnosis") then
-        table.insert(config_argv, "-D")
+        table.insert(config_argv, "-vD")
     end
     if option.get("plat") then
         table.insert(config_argv, "-p")
@@ -165,9 +162,9 @@ function _remove_packages(packages)
     if mode == "debug" then
         extra.debug = true
     end
-    if kind == "shared" then
+    if kind then
         extra.configs = extra.configs or {}
-        extra.configs.shared = true
+        extra.configs.shared = kind == "shared"
     end
     local configs = option.get("configs")
     if configs then
@@ -180,7 +177,7 @@ function _remove_packages(packages)
         end
     end
     if not packagefile then
-        -- avoid to override extra configs in add_requires/xmake.lua
+        -- avoid overriding extra configs in add_requires/xmake.lua
         if extra then
             local extra_str = string.serialize(extra, {indent = false, strip = true})
             table.insert(require_argv, "--extra=" .. extra_str)

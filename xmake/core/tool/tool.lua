@@ -32,6 +32,7 @@ local config        = require("project/config")
 local sandbox       = require("sandbox/sandbox")
 local toolchain     = require("tool/toolchain")
 local platform      = require("platform/platform")
+local language      = require("language/language")
 local import        = require("sandbox/modules/import")
 
 -- new an instance
@@ -40,7 +41,7 @@ function _instance.new(kind, name, program, plat, arch, toolchain_inst)
     -- import "core.tools.xxx"
     local toolclass = nil
     if os.isfile(path.join(os.programdir(), "modules", "core", "tools", name .. ".lua")) then
-        toolclass = import("core.tools." .. name, {nocache = true}) -- @note we need create a tool instance with unique toolclass context (_g)
+        toolclass = import("core.tools." .. name, {nocache = true}) -- @note we need to create a tool instance with unique toolclass context (_g)
     end
 
     -- not found?
@@ -67,8 +68,6 @@ function _instance.new(kind, name, program, plat, arch, toolchain_inst)
             return nil, errors
         end
     end
-
-    -- ok
     return instance
 end
 
@@ -90,6 +89,26 @@ end
 -- get the tool architecture
 function _instance:arch()
     return self._ARCH
+end
+
+-- the current target is belong to the given platforms?
+function _instance:is_plat(...)
+    local plat = self:plat()
+    for _, v in ipairs(table.join(...)) do
+        if v and plat == v then
+            return true
+        end
+    end
+end
+
+-- the current target is belong to the given architectures?
+function _instance:is_arch(...)
+    local arch = self:arch()
+    for _, v in ipairs(table.join(...)) do
+        if v and arch:find("^" .. v:gsub("%-", "%%-") .. "$") then
+            return true
+        end
+    end
 end
 
 -- get the tool program
@@ -137,12 +156,7 @@ function _instance:has_flags(flags, flagkind, opt)
     opt.program = opt.program or self:program()
     opt.toolkind = opt.toolkind or self:kind()
     opt.flagkind = opt.flagkind or flagkind
-
-    -- get system flags
-    opt.sysflags = opt.sysflags or self:get(self:kind() .. 'flags')
-    if not opt.sysflags and opt.flagkind then
-        opt.sysflags = self:get(opt.flagkind)
-    end
+    opt.sysflags = opt.sysflags or self:_sysflags(opt.toolkind, opt.flagkind)
 
     -- import has_flags()
     self._has_flags = self._has_flags or import("lib.detect.has_flags", {anonymous = true})
@@ -152,6 +166,61 @@ function _instance:has_flags(flags, flagkind, opt)
 
     -- has flags?
     return self._has_flags(self:name(), flags, opt)
+end
+
+-- load tool only once
+function _instance:_load_once()
+    if not self._LOADED then
+        if self.load then
+            local ok, errors = sandbox.load(self.load, self)
+            if not ok then
+                return false, errors
+            end
+        end
+        self._LOADED = true
+    end
+    return true
+end
+
+-- get system flags from toolchains
+-- @see https://github.com/xmake-io/xmake/issues/3429
+function _instance:_sysflags(toolkind, flagkind)
+    local sysflags = {}
+    local sourceflags = language.sourceflags()[toolkind]
+    if not sourceflags and flagkind then
+        sourceflags = {}
+        if flagkind == "cflags" or flagkind == "cxxflags" then
+            table.insert(sourceflags, flagkind)
+            table.insert(sourceflags, "cxflags")
+        elseif flagkind == "cxflags" then
+            table.insert(sourceflags, flagkind)
+            table.insert(sourceflags, "cxxflags")
+        elseif flagkind == "mflags" or flagkind == "mxxflags" then
+            table.insert(sourceflags, flagkind)
+            table.insert(sourceflags, "mxflags")
+        elseif flagkind == "mxflags" then
+            table.insert(sourceflags, flagkind)
+            table.insert(sourceflags, "mxxflags")
+        else
+            -- flagkind may be ldflags, we need to ignore it
+            -- and we should use more precise flagkind, e.g. rcldflags instead of ldflags
+        end
+    end
+    if sourceflags then
+        for _, flagname in ipairs(table.wrap(sourceflags)) do
+            local flags = self:get(flagname)
+            if flags then
+                table.join2(sysflags, flags)
+            end
+        end
+    end
+    -- maybe it's linker flags, ld -> ldflags, dcld -> dcldflags
+    if #sysflags == 0 then
+        table.join2(sysflags, self:get(toolkind .. "flags"))
+    end
+    if #sysflags > 0 then
+        return sysflags
+    end
 end
 
 -- load the given tool from the given kind
@@ -186,7 +255,7 @@ function tool.load(kind, opt)
     if program then
         local pos = program:find('@', 1, true)
         if pos then
-            -- we need ignore valid path with `@`, e.g. /usr/local/opt/go@1.17/bin/go
+            -- we need to ignore valid path with `@`, e.g. /usr/local/opt/go@1.17/bin/go
             -- https://github.com/xmake-io/xmake/issues/2853
             local prefix = program:sub(1, pos - 1)
             if prefix and not prefix:find("[/\\]") then

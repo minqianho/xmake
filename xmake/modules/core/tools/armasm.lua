@@ -45,53 +45,6 @@ function nf_symbol(self, level)
     end
 end
 
--- make the optimize flag
-function nf_optimize(self, level)
-    local maps =
-    {
-        none       = "-O0"
-    ,   fast       = "-O1"
-    ,   faster     = "-O2"
-    ,   fastest    = "-O3"
-    ,   smallest   = "-Os"
-    ,   aggressive = "-Ofast"
-    }
-    return maps[level]
-end
-
--- make the language flag
-function nf_language(self, stdname)
-
-    -- the stdc maps
-    if _g.cmaps == nil then
-        _g.cmaps =
-        {
-            ansi        = "-c89"
-        ,   c89         = "-c89"
-        ,   gnu89       = "-c89"
-        ,   c99         = "-c99"
-        ,   gnu99       = "-c99"
-        ,   c11         = "-c11"
-        ,   gnu11       = "-c11"
-        ,   clatest     = {"-c11", "-c99", "-c89"}
-        ,   gnulatest   = {"-c11", "-c99", "-c89"}
-        }
-    end
-    local maps = _g.cmaps
-    local result = maps[stdname]
-    if type(result) == "table" then
-        for _, v in ipairs(result) do
-            if self:has_flags(v, "cxflags") then
-                result = v
-                maps[stdname] = result
-                return result
-            end
-        end
-    else
-        return result
-    end
-end
-
 -- make runtime flag
 function nf_runtime(self, runtime)
     if runtime == "microlib" then

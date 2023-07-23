@@ -134,7 +134,6 @@ static tb_float_t xm_os_cpuinfo_usagerate()
     tb_float_t usagerate = 0;
     if (tb_file_info("/proc/stat", tb_null))
     {
-        tb_bool_t ok = tb_false;
         FILE* fp = fopen("/proc/stat", "r");
         if (fp)
         {
@@ -185,7 +184,7 @@ static tb_float_t xm_os_cpuinfo_usagerate()
         }
     }
     return usagerate;
-#elif defined(TB_CONFIG_OS_BSD)
+#elif defined(TB_CONFIG_OS_BSD) && !defined(__OpenBSD__)
 #   define CP_USER   0
 #   define CP_NICE   1
 #   define CP_SYS    2

@@ -31,6 +31,7 @@ jobs:
       - name: Installation
         run: |
           brew install dmd
+          brew install dub
 
       - name: Tests
         run: |
@@ -41,13 +42,8 @@ jobs:
         run: |
           brew install gnu-tar
           gem install --no-document fpm
-          scripts/makepkg osxpkg
           scripts/archive-all
           scripts/makeself/build-runfile.sh
-      - uses: actions/upload-artifact@v2
-        with:
-          name: xmake-latest.macosx.pkg
-          path: artifacts/xmake.pkg
       - uses: actions/upload-artifact@v2
         with:
           name: xmake-latest.gz.run
@@ -80,16 +76,15 @@ jobs:
           tag: ${{ steps.previoustag.outputs.tag }}
           overwrite: true
 
-      - name: Publish package
-        if: github.event.action == 'published'
-        uses: actions/upload-release-asset@v1.0.1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Upload artifacts to lastest release
+        if: github.ref == 'refs/heads/master'
+        uses: svenstaro/upload-release-action@v2
         with:
-          upload_url: ${{ github.event.release.upload_url }}
-          asset_path: artifacts/xmake.pkg
-          asset_name: xmake-${{ steps.tagName.outputs.tag }}.macosx.pkg
-          asset_content_type: application/zip
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: artifacts/xmake.tar.gz
+          asset_name: xmake-master.tar.gz
+          tag: ${{ steps.previoustag.outputs.tag }}
+          overwrite: true
 
       - name: Publish gz runfile
         if: github.event.action == 'published'

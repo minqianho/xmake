@@ -135,8 +135,12 @@ function _target_values(complete, opt)
     return import("private.utils.complete_helper.targets")(complete, opt)
 end
 
+-- the toolchains is too much, so we just show all for menuconf and auto-complete mode.
+-- @see https://github.com/xmake-io/xmake/issues/3436
+--
 function _toolchain_values(complete, opt)
-    if complete then
+    opt = opt or {}
+    if complete or opt.menuconf then
         import("core.tool.toolchain")
         return toolchain.list()
     end
@@ -165,16 +169,17 @@ task("config")
                 description = "Configure the project.",
                 shortname = 'f',
                 options = {
-                    {'c', "clean",      "k",  nil       ,   "Clean the cached configure and configure all again."},
+                    {'c', "clean",      "k",  nil       ,   "Clean the cached user configs and detection cache."},
+                    {nil, "check",      "k",  nil       ,   "Just ignore detection cache and force to check all, it will reserve the cached user configs."},
                     {nil, "export",     "kv", nil       ,   "Export the current configuration to the given file."
                                                         ,   "    e.g."
                                                         ,   "    - xmake f -m debug -xxx=y --export=build/config.txt"},
-                    {nil, "import",     "kv", nil       ,   "Import configuration from the given file."
+                    {nil, "import",     "kv", nil       ,   "Import configs from the given file."
                                                         ,   "    e.g."
                                                         ,   "    - xmake f -import=build/config.txt"},
                     {nil, "menu",       "k",  nil       ,   "Configure project with a menu-driven user interface."},
                     {category = "."},
-                    {'p', "plat",       "kv", "auto"    , "Compile for the given platform.", values = _plat_values},
+                    {'p', "plat",       "kv", "auto"    ,   "Compile for the given platform.", values = _plat_values},
                     {'a', "arch",       "kv", "auto"    ,   "Compile for the given architecture.", _arch_description, values = _arch_values},
                     {'m', "mode",       "kv", "auto" ,      "Compile for the given mode.", values = _mode_values},
                     {'k', "kind",       "kv", "static"  ,   "Compile for the given target kind.", values = {"static", "shared", "binary"}},
@@ -226,8 +231,6 @@ task("config")
                                                             "    - xmake f --trybuild=autoconf --tryconfigs='--enable-shared=no'"},
                     {'o', "buildir",    "kv", "build"   , "Set build directory."},
                     {},
-                    {nil, "target",     "v" , nil       , "Configure for the given target."
-                                                        , values = _target_values},
                     {category = "Project Configuration"},
                     _project_menu_options}}
 

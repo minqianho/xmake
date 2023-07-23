@@ -53,7 +53,7 @@ end
 
 -- make the define flag
 function nf_define(self, macro)
-    return "--define:" .. macro
+    return {"--define:" .. macro}
 end
 
 -- make the undefine flag
@@ -90,7 +90,7 @@ end
 
 -- make the strip flag
 function nf_strip(self, level, target)
-    if target:is_plat("linux", "macosx", "bsd") then
+    if self:is_plat("linux", "macosx", "bsd") then
         if level == "debug" or level == "all" then
             return "--passL:-s"
         end
@@ -104,7 +104,7 @@ end
 
 -- make the link flag
 function nf_link(self, lib, target)
-    if target:is_plat("windows") then
+    if self:is_plat("windows") then
         return "--passL:" .. lib .. ".lib"
     else
         return "--passL:-l" .. lib
@@ -113,7 +113,7 @@ end
 
 -- make the linkdir flag
 function nf_linkdir(self, dir, target)
-    if target:is_plat("windows") then
+    if self:is_plat("windows") then
         return {"--passL:-libpath:" .. path.translate(dir)}
     else
         return {"--passL:-L" .. path.translate(dir)}
@@ -123,19 +123,13 @@ end
 -- make the build arguments list
 function buildargv(self, sourcefiles, targetkind, targetfile, flags)
     local flags_extra = {}
-    if targetkind == "static" then
-        -- fix multiple definition of `NimMain', it is only workaround solution
-        -- we need to wait for this problem to be resolved
+    if targetkind == "binary" then
+        -- fix multiple definition of `NimMain'
         --
-        -- @see https://github.com/nim-lang/Nim/issues/15955
-        local uniquekey = hash.uuid(targetfile):split("-", {plain = true})[1]
-        table.insert(flags_extra, "--passC:-DNimMain=NimMain_" .. uniquekey)
-        table.insert(flags_extra, "--passC:-DNimMainInner=NimMainInner_" .. uniquekey)
-        table.insert(flags_extra, "--passC:-DNimMainModule=NimMainModule_" .. uniquekey)
-        table.insert(flags_extra, "--passC:-DPreMain=PreMain_" .. uniquekey)
-        table.insert(flags_extra, "--passC:-DPreMainInner=PreMainInner_" .. uniquekey)
+        -- @see https://github.com/nim-lang/Nim/issues/19830
+        table.insert(flags_extra, "--passL:-Wl,--allow-multiple-definition")
     end
-    if targetkind ~= "static" and is_plat("windows") then
+    if targetkind ~= "static" and self:is_plat("windows") then
         -- fix link flags for windows
         -- @see https://github.com/nim-lang/Nim/issues/19033
         local flags_new = {}

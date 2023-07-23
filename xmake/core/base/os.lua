@@ -39,6 +39,7 @@ os._mkdir    = os._mkdir or os.mkdir
 os._rmdir    = os._rmdir or os.rmdir
 os._touch    = os._touch or os.touch
 os._tmpdir   = os._tmpdir or os.tmpdir
+os._fscase   = os._fscase or os.fscase
 os._setenv   = os._setenv or os.setenv
 os._getenvs  = os._getenvs or os.getenvs
 os._cpuinfo  = os._cpuinfo or os.cpuinfo
@@ -50,6 +51,7 @@ os.SYSERR_UNKNOWN     = -1
 os.SYSERR_NONE        = 0
 os.SYSERR_NOT_PERM    = 1
 os.SYSERR_NOT_FILEDIR = 2
+os.SYSERR_NOT_ACCESS  = 3
 
 -- copy single file or directory
 function os._cp(src, dst, rootdir, opt)
@@ -154,24 +156,14 @@ function os._rm(filedir)
 end
 
 -- get the ramdisk root directory
+-- https://github.com/xmake-io/xmake/issues/3408
 function os._ramdir()
-
-    -- get root ramdir
     local ramdir_root = os._ROOT_RAMDIR
     if ramdir_root == nil then
         ramdir_root = os.getenv("XMAKE_RAMDIR")
     end
     if ramdir_root == nil then
-        if os.host() == "linux" and os.isdir("/dev/shm") then
-            ramdir_root = "/dev/shm"
-        elseif os.host() == "macosx" and os.isdir("/Volumes/RAM") then
-            -- @note we need the user to execute the command to create it.
-            -- diskutil partitionDisk `hdiutil attach -nomount ram://8388608` GPT APFS "RAM" 0
-            ramdir_root = "/Volumes/RAM"
-        end
-        if ramdir_root == nil then
-            ramdir_root = false
-        end
+        ramdir_root = false
         os._ROOT_RAMDIR = ramdir_root
     end
     return ramdir_root or nil
@@ -267,6 +259,16 @@ function os._is_tracing_process()
         os._IS_TRACING_PROCESS = is_tracing
     end
     return is_tracing
+end
+
+-- run all exit callback
+function os._run_exit_cbs(ok, errors)
+    local exit_callbacks = os._EXIT_CALLBACKS
+    if exit_callbacks then
+        for _, cb in ipairs(exit_callbacks) do
+            cb(ok, errors)
+        end
+    end
 end
 
 -- match files or directories
@@ -649,9 +651,23 @@ end
 
 -- exit program
 function os.exit(...)
-
-    -- do exit
     return os._exit(...)
+end
+
+-- register exit callback
+--
+-- e.g.
+-- os.atexit(function (ok, errors)
+--     print(ok, errors)
+-- end)
+--
+function os.atexit(on_exit)
+    local exit_callbacks = os._EXIT_CALLBACKS
+    if exit_callbacks == nil then
+        exit_callbacks = {}
+        os._EXIT_CALLBACKS = exit_callbacks
+    end
+    table.insert(exit_callbacks, on_exit)
 end
 
 -- run command
@@ -755,7 +771,7 @@ function os.execv(program, argv, opt)
         local head = file:read("l")
         if head and head:startswith("#!") then
             -- we cannot run `/bin/sh` directly on msys2/cygwin
-            -- because `/bin/sh` is not real file path, maybe we need convert it.
+            -- because `/bin/sh` is not real file path, maybe we need to convert it.
             local subhost = os.subhost()
             if subhost == "msys" or subhost == "cygwin" then
                 filename = "sh"
@@ -797,7 +813,14 @@ function os.execv(program, argv, opt)
     end
 
     -- init open options
-    local openopt = {envs = envs, stdin = opt.stdin, stdout = opt.stdout, stderr = opt.stderr, curdir = opt.curdir, detach = opt.detach}
+    local openopt = {
+        envs = envs,
+        stdin = opt.stdin,
+        stdout = opt.stdout,
+        stderr = opt.stderr,
+        curdir = opt.curdir,
+        detach = opt.detach,
+        exclusive = opt.exclusive}
 
     -- open command
     local ok = -1
@@ -1046,8 +1069,24 @@ function os.isroot()
 end
 
 -- is case-insensitive filesystem?
-function os.fscase()
-    if os._FSCASE == nil then
+function os.fscase(filepath)
+    if os._FSCASE == nil or filepath then
+        if os._fscase then
+            if filepath then
+                assert(os.exists(filepath), filepath .. " not found in os.fscase()")
+            else
+                local tmpdir = os.tmpdir()
+                if not os.isdir(tmpdir) then
+                    os.mkdir(tmpdir)
+                end
+                filepath = tmpdir
+            end
+            local fscase = os._fscase(filepath)
+            if fscase ~= -1 then
+                os._FSCASE = (fscase == 1)
+                return os._FSCASE
+            end
+        end
         if os.host() == "windows" then
             os._FSCASE = false
         else
@@ -1096,7 +1135,9 @@ function os.getenvs()
         local p = line:find('=', 1, true)
         if p then
             local key = line:sub(1, p - 1):trim()
-            if os.host() == "windows" then
+            -- only translate Path to PATH on windows
+            -- @see https://github.com/xmake-io/xmake/issues/3752
+            if os.host() == "windows" and key:lower() == "path" then
                 key = key:upper()
             end
             local values = line:sub(p + 1):trim()
@@ -1357,3 +1398,4 @@ end
 
 -- return module
 return os
+

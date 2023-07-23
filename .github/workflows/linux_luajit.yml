@@ -24,14 +24,17 @@ jobs:
 
       - name: Installation
         run: |
-          make RUNTIME=luajit
+          ./configure --runtime=luajit
+          make -j`nproc`
           ./scripts/get.sh __local__ __install_only__
           source ~/.xmake/profile
           xmake --version
 
       - name: Prepare
         run: |
+          sudo apt update
           sudo apt install -y build-essential llvm
+          sudo apt install -y libgl1-mesa-dev libglu1-mesa-dev
 
       - name: Tests
         run: |

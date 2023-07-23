@@ -113,7 +113,7 @@ function _instance:_api_set_values(name, ...)
         extra_config = nil
     end
 
-    -- @note we need mark table value as meta object to avoid wrap/unwrap
+    -- @note we need to mark table value as meta object to avoid wrap/unwrap
     -- if these values cannot be expanded, especially when there is only one value
     --
     -- e.g. target:set("shflags", {"-Wl,-exported_symbols_list", exportfile}, {force = true, expand = false})
@@ -130,7 +130,7 @@ function _instance:_api_set_values(name, ...)
     local handled_values = self:_api_handle(name, values)
 
     -- save values
-    if type(handled_values) == "table" and #handled_values == 0 then
+    if type(handled_values) == "table" and table.empty(handled_values) then
         -- set("xx", nil)? remove it
         scope[name] = nil
     else
@@ -162,7 +162,7 @@ function _instance:_api_add_values(name, ...)
         extra_config = nil
     end
 
-    -- @note we need mark table value as meta object to avoid wrap/unwrap
+    -- @note we need to mark table value as meta object to avoid wrap/unwrap
     -- if these values cannot be expanded, especially when there is only one value
     --
     -- e.g. target:add("shflags", {"-Wl,-exported_symbols_list", exportfile}, {force = true, expand = false})
@@ -664,9 +664,20 @@ function _instance:extraconf_set(name, item, key, value)
     end
 end
 
+-- get configuration source information of the given api item
+--
+-- e.g.
+-- self:get("defines", "TEST")
+--  - add_defines("TEST")
+--    - src/xmake.lua:10
+--
+function _instance:sourceinfo(name, item)
+    return (self:get("__sourceinfo_" .. name) or {})[item]
+end
+
 -- clone a new instance from the current
 function _instance:clone()
-    return _instance.new(self:kind(), self:info(), {interpreter = self:interpreter(), deduplicate = self._DEDUPLICATE, enable_filter = self._ENABLE_FILTER})
+    return _instance.new(self:kind(), table.clone(self:info()), {interpreter = self:interpreter(), deduplicate = self._DEDUPLICATE, enable_filter = self._ENABLE_FILTER})
 end
 
 -- new a scope instance

@@ -28,7 +28,7 @@ rule("qt.moc")
         import("core.tool.compiler")
 
         -- get moc
-        local qt = assert(target:data("qt"), "qt not found!")
+        local qt = assert(target:data("qt"), "Qt not found!")
         local moc = path.join(qt.bindir, is_host("windows") and "moc.exe" or "moc")
         if not os.isexec(moc) and qt.libexecdir then
             moc = path.join(qt.libexecdir, is_host("windows") and "moc.exe" or "moc")
@@ -58,16 +58,26 @@ rule("qt.moc")
         -- add commands
         batchcmds:show_progress(opt.progress, "${color.build.object}compiling.qt.moc %s", sourcefile)
 
+        -- get values from target
+        -- @see https://github.com/xmake-io/xmake/issues/3930
+        local function _get_values_from_target(target, name)
+            local values = table.wrap(target:get(name))
+            table.join2(values, target:get_from_opts(name))
+            table.join2(values, target:get_from_pkgs(name))
+            table.join2(values, target:get_from_deps(name, {interface = true}))
+            return table.unique(values)
+        end
+
         -- generate c++ source file for moc
         local flags = {}
-        table.join2(flags, compiler.map_flags("cxx", "define", target:get("defines")))
+        table.join2(flags, compiler.map_flags("cxx", "define", _get_values_from_target(target, "defines")))
         local pathmaps = {
             {"includedirs", "includedir"},
             {"sysincludedirs", "includedir"}, -- for now, moc process doesn't support MSVC external includes flags and will fail
             {"frameworkdirs", "frameworkdir"}
         }
         for _, pathmap in ipairs(pathmaps) do
-            for _, item in ipairs(target:get(pathmap[1])) do
+            for _, item in ipairs(_get_values_from_target(target, pathmap[1])) do
                 local pathitem = path(item, function (p)
                     local item = table.unwrap(compiler.map_flags("cxx", pathmap[2], p))
                     if item then
@@ -76,14 +86,16 @@ rule("qt.moc")
                     end
                     return item
                 end)
-                table.insert(flags, pathitem)
+                if not pathitem:empty() then
+                    table.insert(flags, pathitem)
+                end
             end
         end
         local user_flags = target:get("qt.moc.flags") or {}
         batchcmds:mkdir(path.directory(sourcefile_moc))
         batchcmds:vrunv(moc, table.join(user_flags, flags, path(sourcefile), "-o", path(sourcefile_moc)))
 
-        -- we need compile this moc_xxx.cpp file if exists Q_PRIVATE_SLOT, @see https://github.com/xmake-io/xmake/issues/750
+        -- we need to compile this moc_xxx.cpp file if exists Q_PRIVATE_SLOT, @see https://github.com/xmake-io/xmake/issues/750
         local mocdata = io.readfile(sourcefile)
         if mocdata and mocdata:find("Q_PRIVATE_SLOT") or sourcefile_moc:endswith(".moc") then
             -- add includedirs of sourcefile_moc

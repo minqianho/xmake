@@ -25,29 +25,7 @@ import("core.project.config")
 import("core.project.project")
 import("private.async.runjobs")
 import("private.utils.batchcmds")
-
--- get rule
-function _get_rule(rulename)
-    local ruleinst = assert(project.rule(rulename) or rule.rule(rulename), "unknown rule: %s", rulename)
-    return ruleinst
-end
-
--- get max depth of rule
-function _get_rule_max_depth(ruleinst, depth)
-    local max_depth = depth
-    for _, depname in ipairs(ruleinst:get("deps")) do
-        local dep = _get_rule(depname)
-        local dep_depth = depth
-        if ruleinst:extraconf("deps", depname, "order") then
-            dep_depth = dep_depth + 1
-        end
-        local cur_depth = _get_rule_max_depth(dep, dep_depth)
-        if cur_depth > max_depth then
-            max_depth = cur_depth
-        end
-    end
-    return max_depth
-end
+import("private.utils.rule_groups")
 
 -- has scripts for the custom rule
 function _has_scripts_for_rule(ruleinst, suffix)
@@ -113,7 +91,7 @@ function _add_batchjobs_for_rule(batchjobs, rootjob, target, sourcebatch, suffix
 
     -- get rule
     local rulename = assert(sourcebatch.rulename, "unknown rule for sourcebatch!")
-    local ruleinst = _get_rule(rulename)
+    local ruleinst = rule_groups.get_rule(target, rulename)
 
     -- add batch jobs for xx_build_files
     local scriptname = "build_files" .. (suffix and ("_" .. suffix) or "")
@@ -176,6 +154,22 @@ end
 -- add batch jobs for target
 function _add_batchjobs_for_target(batchjobs, rootjob, target, sourcebatch, suffix)
 
+    -- we just build sourcebatch with on_build_files scripts
+    --
+    -- for example, c++.build and c++.build.modules.builder rules have same sourcefiles,
+    -- but we just build it for c++.build
+    --
+    -- @see https://github.com/xmake-io/xmake/issues/3171
+    --
+    local rulename = sourcebatch.rulename
+    if rulename then
+        local ruleinst = rule_groups.get_rule(target, rulename)
+        if not ruleinst:script("build_file") and
+            not ruleinst:script("build_files") then
+            return
+        end
+    end
+
     -- add batch jobs
     local scriptname = "build_files" .. (suffix and ("_" .. suffix) or "")
     local script = target:script(scriptname)
@@ -210,62 +204,18 @@ function _add_batchjobs_for_group(batchjobs, rootjob, target, group, suffix)
         if item.target then
             _add_batchjobs_for_target(batchjobs, rootjob, target, sourcebatch, suffix)
         end
-        -- override on_xxx script in target? we need ignore rule scripts
+        -- override on_xxx script in target? we need to ignore rule scripts
         if item.rule and (suffix or not _has_scripts_for_target(target, suffix)) then
             _add_batchjobs_for_rule(batchjobs, rootjob, target, sourcebatch, suffix)
         end
     end
 end
 
--- build sourcebatch groups for target
-function _build_sourcebatch_groups_for_target(groups, target, sourcebatches)
-    local group = groups[1]
-    for _, sourcebatch in pairs(sourcebatches) do
-        local rulename = assert(sourcebatch.rulename, "unknown rule for sourcebatch!")
-        local item = group[rulename] or {}
-        item.target = target
-        item.sourcebatch = sourcebatch
-        group[rulename] = item
-    end
-end
-
--- build sourcebatch groups for rules
-function _build_sourcebatch_groups_for_rules(groups, target, sourcebatches)
-    for _, sourcebatch in pairs(sourcebatches) do
-        local rulename = assert(sourcebatch.rulename, "unknown rule for sourcebatch!")
-        local ruleinst = _get_rule(rulename)
-        local depth = _get_rule_max_depth(ruleinst, 1)
-        local group = groups[depth]
-        if group == nil then
-            group = {}
-            groups[depth] = group
-        end
-        local item = group[rulename] or {}
-        item.rule = ruleinst
-        item.sourcebatch = sourcebatch
-        group[rulename] = item
-    end
-end
-
--- build sourcebatch groups by rule dependencies order, e.g. `add_deps("qt.ui", {order = true})`
---
--- @see https://github.com/xmake-io/xmake/issues/2814
---
-function _build_sourcebatch_groups(target, sourcebatches)
-    local groups = {{}}
-    _build_sourcebatch_groups_for_target(groups, target, sourcebatches)
-    _build_sourcebatch_groups_for_rules(groups, target, sourcebatches)
-    if #groups > 0 then
-        groups = table.reverse(groups)
-    end
-    return groups
-end
-
 -- add batch jobs for building source files
 function add_batchjobs_for_sourcefiles(batchjobs, rootjob, target, sourcebatches)
 
     -- build sourcebatch groups first
-    local groups = _build_sourcebatch_groups(target, sourcebatches)
+    local groups = rule_groups.build_sourcebatch_groups(target, sourcebatches)
 
     -- add batch jobs for build_after
     local groups_root

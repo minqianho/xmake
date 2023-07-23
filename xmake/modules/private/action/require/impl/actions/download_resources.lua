@@ -20,6 +20,7 @@
 
 -- imports
 import("core.base.option")
+import("core.base.global")
 import("core.package.package", {alias = "core_package"})
 import("lib.detect.find_file")
 import("lib.detect.find_directory")
@@ -67,7 +68,7 @@ function _checkout(package, resource_name, resource_url, resource_revision)
     -- remove temporary directory
     os.rm(resourcedir)
 
-    -- we need enable longpaths on windows
+    -- we need to enable longpaths on windows
     local longpaths = package:policy("platform.longpaths")
 
     -- clone whole history and tags
@@ -99,7 +100,7 @@ function _download(package, resource_name, resource_url, resource_hash)
 
     -- the package file have been downloaded?
     local cached = true
-    if option.get("force") or not os.isfile(resource_file) or resource_hash ~= hash.sha256(resource_file) then
+    if not os.isfile(resource_file) or resource_hash ~= hash.sha256(resource_file) then
 
         -- no cached
         cached = false
@@ -113,7 +114,9 @@ function _download(package, resource_name, resource_url, resource_hash)
             -- we can use local resource from the search directories directly if network is too slow
             os.cp(localfile, resource_file)
         elseif resource_url:find(string.ipattern("https-://")) or resource_url:find(string.ipattern("ftps-://")) then
-            http.download(resource_url, resource_file)
+            http.download(resource_url, resource_file, {
+                insecure = global.get("insecure-ssl"),
+                headers = package:policy("package.download.http_headers")})
         else
             raise("invalid resource url(%s)", resource_url)
         end
@@ -140,7 +143,7 @@ end
 -- download all resources of the given package
 function main(package)
 
-    -- we need not download it if we use the precompiled artifacts to install package
+    -- we don't need to download it if we use the precompiled artifacts to install package
     if package:is_precompiled() then
         return
     end

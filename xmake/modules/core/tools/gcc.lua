@@ -32,7 +32,6 @@ import("utils.progress")
 import("private.cache.build_cache")
 import("private.service.distcc_build.client", {alias = "distcc_build_client"})
 
--- init it
 function init(self)
 
     -- init mxflags
@@ -43,16 +42,6 @@ function init(self)
 
     -- init shflags
     self:set("shflags", "-shared")
-
-    -- add -fPIC for shared
-    --
-    -- we need check it for clang/gcc with window target
-    -- @see https://github.com/xmake-io/xmake/issues/1392
-    --
-    if not is_plat("windows", "mingw") and self:has_flags("-fPIC", "cxflags") then
-        self:add("shflags", "-fPIC")
-        self:add("shared.cxflags", "-fPIC")
-    end
 
     -- init flags map
     self:set("mapflags", {
@@ -69,10 +58,25 @@ function init(self)
     })
 
     -- for macho target
-    if is_plat("macosx") or is_plat("iphoneos") then
+    if self:is_plat("macosx", "iphoneos") then
         self:add("mapflags", {
             ["-s"] = "-Wl,-x"
         })
+    end
+end
+
+-- we can only call has_flags in load(),
+-- as it requires the full platform toolchain flags.
+--
+function load(self)
+    -- add -fPIC for shared
+    --
+    -- we need check it for clang/gcc with window target
+    -- @see https://github.com/xmake-io/xmake/issues/1392
+    --
+    if not self:is_plat("windows", "mingw") and self:has_flags("-fPIC") then
+        self:add("shflags", "-fPIC")
+        self:add("shared.cxflags", "-fPIC")
     end
 end
 
@@ -82,8 +86,11 @@ function nf_strip(self, level, target)
         debug = "-Wl,-S"
     ,   all   = "-s"
     }
-    if target:is_plat("macosx", "iphoneos") then
-        maps.all = "-Wl,-x"
+    if self:is_plat("macosx", "iphoneos") then
+        maps.all = {"-Wl,-x", "-Wl,-dead_strip"}
+    elseif self:is_plat("windows") then
+        -- clang does not it on windows, TODO maybe we need test it for gcc
+        maps = {}
     end
     return maps[level]
 end
@@ -105,7 +112,7 @@ function nf_symbol(self, level)
         end
         return maps[level .. '_' .. kind] or maps[level]
     elseif kind == "ld" or kind == "sh" then
-        -- we need add `-g` to linker to generate pdb symbol file for mingw-gcc, llvm-clang on windows
+        -- we need to add `-g` to linker to generate pdb symbol file for mingw-gcc, llvm-clang on windows
         local plat = self:plat()
         if level == "debug" and (plat == "windows" or (plat == "mingw" and is_host("windows"))) then
             return "-g"
@@ -166,6 +173,7 @@ function nf_vectorext(self, extension)
     ,   ssse3 = "-mssse3"
     ,   avx   = "-mavx"
     ,   avx2  = "-mavx2"
+    ,   fma   = "-mfma"
     ,   neon  = "-mfpu=neon"
     }
     return maps[extension]
@@ -181,6 +189,8 @@ function nf_language(self, stdname)
             ansi        = "-ansi"
         ,   c89         = "-std=c89"
         ,   gnu89       = "-std=gnu89"
+        ,   c90         = "-std=c90"
+        ,   gnu90       = "-std=gnu90"
         ,   c99         = "-std=c99"
         ,   gnu99       = "-std=gnu99"
         ,   c11         = "-std=c11"
@@ -246,7 +256,7 @@ end
 
 -- make the define flag
 function nf_define(self, macro)
-    return "-D" .. macro
+    return {"-D" .. macro}
 end
 
 -- make the undefine flag
@@ -266,7 +276,11 @@ end
 
 -- make the link flag
 function nf_link(self, lib)
-    return "-l" .. lib
+    if lib:endswith(".a") or lib:endswith(".so") or lib:endswith(".dylib") or lib:endswith(".lib") then
+        return lib
+    else
+        return "-l" .. lib
+    end
 end
 
 -- make the syslink flag
@@ -283,10 +297,15 @@ end
 function nf_rpathdir(self, dir)
     dir = path.translate(dir)
     if self:has_flags("-Wl,-rpath=" .. dir, "ldflags") then
-        return {"-Wl,-rpath=" .. (dir:gsub("@[%w_]+", function (name)
+        local flags = {"-Wl,-rpath=" .. (dir:gsub("@[%w_]+", function (name)
             local maps = {["@loader_path"] = "$ORIGIN", ["@executable_path"] = "$ORIGIN"}
             return maps[name]
         end))}
+        if self:is_plat("bsd") then
+            -- FreeBSD ld must have "-zorigin" with "-rpath".  Otherwise, $ORIGIN is not translated and it is literal.
+            table.insert(flags, 1, "-Wl,-zorigin")
+        end
+        return flags
     elseif self:has_flags("-Xlinker -rpath -Xlinker " .. dir, "ldflags") then
         return {"-Xlinker", "-rpath", "-Xlinker", (dir:gsub("%$ORIGIN", "@loader_path"))}
     end
@@ -300,6 +319,18 @@ end
 -- make the frameworkdir flag
 function nf_frameworkdir(self, frameworkdir)
     return {"-F" .. path.translate(frameworkdir)}
+end
+
+-- make the exception flag
+--
+-- e.g.
+-- set_exceptions("cxx")
+-- set_exceptions("objc")
+-- set_exceptions("no-cxx")
+-- set_exceptions("no-objc")
+-- set_exceptions("cxx", "objc")
+function nf_exception(self, exp)
+    return exp:startswith("no-") and "-fno-exceptions" or "-fexceptions"
 end
 
 -- make the c precompiled header flag
@@ -318,6 +349,30 @@ end
 function nf_pcxxheader(self, pcheaderfile, target)
     if self:kind() == "cxx" then
         local pcoutputfile = target:pcoutputfile("cxx")
+        if self:name() == "clang" then
+            return {"-include", pcheaderfile, "-include-pch", pcoutputfile}
+        else
+            return {"-include", path.filename(pcheaderfile), "-I", path.directory(pcoutputfile)}
+        end
+    end
+end
+
+-- make the objc precompiled header flag
+function nf_pmheader(self, pcheaderfile, target)
+    if self:kind() == "mm" then
+        local pcoutputfile = target:pcoutputfile("m")
+        if self:name() == "clang" then
+            return {"-include", pcheaderfile, "-include-pch", pcoutputfile}
+        else
+            return {"-include", path.filename(pcheaderfile), "-I", path.directory(pcoutputfile)}
+        end
+    end
+end
+
+-- make the objc++ precompiled header flag
+function nf_pmxxheader(self, pcheaderfile, target)
+    if self:kind() == "mxx" then
+        local pcoutputfile = target:pcoutputfile("mxx")
         if self:name() == "clang" then
             return {"-include", pcheaderfile, "-include-pch", pcoutputfile}
         else
@@ -350,14 +405,13 @@ function linkargv(self, objectfiles, targetkind, targetfile, flags, opt)
 
     -- add rpath for dylib (macho), e.g. -install_name @rpath/file.dylib
     local flags_extra = {}
-    local plat = self:plat()
-    if targetkind == "shared" and (plat == "macosx" or plat == "iphoneos" or plat == "watchos") then
+    if targetkind == "shared" and self:is_plat("macosx", "iphoneos", "watchos") then
         table.insert(flags_extra, "-install_name")
         table.insert(flags_extra, "@rpath/" .. path.filename(targetfile))
     end
 
     -- add `-Wl,--out-implib,outputdir/libxxx.a` for xxx.dll on mingw/gcc
-    if targetkind == "shared" and plat == "mingw" then
+    if targetkind == "shared" and self:is_plat("mingw") then
         table.insert(flags_extra, "-Wl,--out-implib," .. path.join(path.directory(targetfile), path.basename(targetfile) .. ".dll.a"))
     end
 
@@ -371,10 +425,18 @@ function linkargv(self, objectfiles, targetkind, targetfile, flags, opt)
 end
 
 -- link the target file
+--
+-- maybe we need to use os.vrunv() to show link output when enable verbose information
+-- @see https://github.com/xmake-io/xmake/discussions/2916
+--
 function link(self, objectfiles, targetkind, targetfile, flags)
     os.mkdir(path.directory(targetfile))
     local program, argv = linkargv(self, objectfiles, targetkind, targetfile, flags)
-    os.runv(program, argv, {envs = self:runenvs()})
+    if option.get("verbose") then
+        os.execv(program, argv, {envs = self:runenvs()})
+    else
+        os.vrunv(program, argv, {envs = self:runenvs()})
+    end
 end
 
 -- has color diagnostics?
@@ -416,10 +478,12 @@ function _preprocess(program, argv, opt)
             is_gcc = true
         elseif tool:name():startswith("clang") then
             is_clang = true
+        elseif tool:name() == "circle" then
+            return
         end
     end
 
-    -- enable "-fdirectives-only"? we need enable it manually
+    -- enable "-fdirectives-only"? we need to enable it manually
     --
     -- @see https://github.com/xmake-io/xmake/issues/2603
     -- https://github.com/xmake-io/xmake/issues/2425
@@ -513,7 +577,7 @@ function _preprocess(program, argv, opt)
     table.insert(cppflags, cppfile)
     table.insert(cppflags, sourcefile)
 
-    -- we need mark as it when compiling the preprocessed source file
+    -- we need to mark as it when compiling the preprocessed source file
     -- it will indicate to the preprocessor that the input file has already been preprocessed.
     if is_gcc then
         table.insert(flags, "-fpreprocessed")
@@ -541,13 +605,14 @@ end
 -- compile preprocessed file
 function _compile_preprocessed_file(program, cppinfo, opt)
     local outdata, errdata = os.iorunv(program, table.join(cppinfo.cppflags, "-o", cppinfo.objectfile, cppinfo.cppfile), opt)
-    -- we need get warning information from output
+    -- we need to get warning information from output
     cppinfo.outdata = outdata
     cppinfo.errdata = errdata
 end
 
 -- do compile
 function _compile(self, sourcefile, objectfile, compflags, opt)
+    opt = opt or {}
     local program, argv = compargv(self, sourcefile, objectfile, compflags)
     local function _compile_fallback()
         return os.iorunv(program, argv, {envs = self:runenvs()})
@@ -557,7 +622,7 @@ function _compile(self, sourcefile, objectfile, compflags, opt)
         cppinfo = distcc_build_client.singleton():compile(program, argv, {envs = self:runenvs(),
             preprocess = _preprocess, compile = _compile_preprocessed_file, compile_fallback = _compile_fallback,
             tool = self, remote = true})
-    elseif build_cache.is_enabled() and build_cache.is_supported(self:kind()) then
+    elseif build_cache.is_enabled(opt.target) and build_cache.is_supported(self:kind()) then
         cppinfo = build_cache.build(program, argv, {envs = self:runenvs(),
             preprocess = _preprocess, compile = _compile_preprocessed_file, compile_fallback = _compile_fallback,
             tool = self})
@@ -586,14 +651,30 @@ function _compargv_pch(self, pcheaderfile, pcoutputfile, flags)
         end
     end
 
-    -- compile header.h as c++?
+    -- set the language of precompiled header?
     if self:kind() == "cxx" then
         table.insert(pchflags, "-x")
         table.insert(pchflags, "c++-header")
+    elseif self:kind() == "cc" then
+        table.insert(pchflags, "-x")
+        table.insert(pchflags, "c-header")
+    elseif self:kind() == "mxx" then
+        table.insert(pchflags, "-x")
+        table.insert(pchflags, "objective-c++-header")
+    elseif self:kind() == "mm" then
+        table.insert(pchflags, "-x")
+        table.insert(pchflags, "objective-c-header")
     end
 
     -- make the compile arguments list
     return self:program(), table.join("-c", pchflags, "-o", pcoutputfile, pcheaderfile)
+end
+
+-- get modules cache directory
+function _modules_cachedir(target)
+    if target and target.autogendir and target:data("cxx.has_modules") then -- we need to ignore option instance
+        return path.join(target:autogendir(), "rules", "modules", "cache")
+    end
 end
 
 -- make the compile arguments list
@@ -607,12 +688,13 @@ function compargv(self, sourcefile, objectfile, flags)
 end
 
 -- compile the source file
-function compile(self, sourcefile, objectfile, dependinfo, flags)
+function compile(self, sourcefile, objectfile, dependinfo, flags, opt)
 
     -- ensure the object directory
     os.mkdir(path.directory(objectfile))
 
     -- compile it
+    opt = opt or {}
     local depfile = dependinfo and os.tmpfile() or nil
     try
     {
@@ -698,6 +780,7 @@ function compile(self, sourcefile, objectfile, dependinfo, flags)
                 if depfile and os.isfile(depfile) then
                     if dependinfo then
                         dependinfo.depfiles_gcc = io.readfile(depfile, {continuation = "\\"})
+                        dependinfo.modules_cachedir = _modules_cachedir(opt.target)
                     end
 
                     -- remove the temporary dependent file

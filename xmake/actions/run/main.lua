@@ -54,7 +54,7 @@ function _do_run_target(target)
     end
 
     -- get run arguments
-    local args = option.get("arguments") or target:get("runargs")
+    local args = table.wrap(option.get("arguments") or target:get("runargs"))
 
     -- debugging?
     if option.get("debug") then
@@ -176,7 +176,7 @@ function _check_targets(targetname, group_pattern)
         table.insert(targets, target)
     else
         for _, target in ipairs(project.ordertargets()) do
-            if target:is_binary() then
+            if target:is_binary() or target:script("run") then
                 local group = target:get("group")
                 if (target:is_default() and not group_pattern) or option.get("all") or (group_pattern and group and group:match(group_pattern)) then
                     table.insert(targets, target)
@@ -213,6 +213,9 @@ function main()
     -- load config first
     config.load()
 
+    -- load targets
+    project.load_targets()
+
     -- check targets first
     local targetname
     local group_pattern = option.get("group")
@@ -232,7 +235,7 @@ function main()
     else
         local targets = {}
         for _, target in ipairs(project.ordertargets()) do
-            if target:is_binary() then
+            if target:is_binary() or target:script("run") then
                 local group = target:get("group")
                 if (target:is_default() and not group_pattern) or option.get("all") or (group_pattern and group and group:match(group_pattern)) then
                     table.insert(targets, target)

@@ -201,7 +201,12 @@ function _fix_paths_for_precompiled_package(package)
             local filepattern = path.join(package:installdir(), filepat)
             for _, file in ipairs(os.files(filepattern)) do
                 if remote_prefix then
-                    io.replace(file, remote_prefix, local_prefix, {plain = true})
+                    local _, count = io.replace(file, remote_prefix, local_prefix, {plain = true})
+                    -- maybe we need to translate path seperator
+                    -- @see https://github.com/xmake-io/xmake/discussions/3008
+                    if count == 0 and is_host("windows") then
+                        io.replace(file, (remote_prefix:gsub("\\", "/")), local_prefix:gsub("\\", "/"), {plain = true})
+                    end
                 else
                     for _, search_pattern in ipairs(pat.search_pattern) do
                         _fix_path_for_file(file, search_pattern)
@@ -222,8 +227,27 @@ function _check_package_toolchains(package)
     end
 end
 
--- install the given package
-function main(package)
+-- get failed install directory
+function _get_installdir_failed(package)
+    return path.join(package:cachedir(), "installdir.failed")
+end
+
+-- clear install directory
+function _clear_installdir(package)
+    os.tryrm(package:installdir())
+    os.tryrm(_get_installdir_failed(package))
+end
+
+-- clear source directory
+function _clear_sourcedir(package)
+    local sourcedir = package:data("cleanable_sourcedir")
+    if sourcedir then
+        os.tryrm(sourcedir)
+    end
+end
+
+-- enter working directory
+function _enter_workdir(package)
 
     -- get working directory of this package
     local workdir = package:cachedir()
@@ -231,7 +255,7 @@ function main(package)
     -- lock this package
     package:lock()
 
-    -- enter the working directory
+    -- enter directory
     local oldir = nil
     local sourcedir = package:sourcedir()
     if sourcedir then
@@ -250,6 +274,47 @@ function main(package)
         os.mkdir(workdir)
         oldir = os.cd(workdir)
     end
+
+    -- we need to copy source codes to the working directory with short path on windows
+    --
+    -- Because the target name and source file path of this project are too long,
+    -- it's absolute path exceeds the windows path length limit.
+    --
+    if is_host("windows") and package:policy("platform.longpaths") then
+        local sourcedir_tmp = os.tmpdir() .. ".dir"
+        os.tryrm(sourcedir_tmp)
+        os.cp(os.curdir(), sourcedir_tmp)
+        os.cd(sourcedir_tmp)
+    end
+
+    return oldir
+end
+
+-- leave working directory
+function _leave_workdir(package, oldir)
+
+    -- clean the empty package directory
+    local installdir = package:installdir()
+    if os.emptydir(installdir) then
+        os.tryrm(installdir)
+    end
+
+    -- unlock this package
+    package:unlock()
+
+    -- leave source codes directory
+    if oldir then
+        os.cd(oldir)
+    end
+
+    -- clean source directory if it is no longer needed
+    _clear_sourcedir(package)
+end
+
+function main(package)
+
+    -- enter working directory
+    local oldir = _enter_workdir(package)
 
     -- init tipname
     local tipname = package:name()
@@ -277,8 +342,8 @@ function main(package)
                 local force_reinstall = package:data("force_reinstall") or option.get("force")
                 if force_reinstall or not package:manifest_load() then
 
-                    -- clean install directory first
-                    os.tryrm(package:installdir())
+                    -- clear install directory
+                    _clear_installdir(package)
 
                     -- download package resources
                     download_resources(package)
@@ -297,6 +362,12 @@ function main(package)
                     -- do install
                     if script ~= nil then
                         filter.call(script, package, {oldenvs = oldenvs})
+                    end
+
+                    -- install rules
+                    local rulesdir = path.join(package:scriptdir(), "rules")
+                    if os.isdir(rulesdir) then
+                        os.cp(rulesdir, package:installdir())
                     end
 
                     -- leave the environments of all package dependencies
@@ -368,8 +439,7 @@ function main(package)
                 -- copy the invalid package directory to cache
                 local installdir = package:installdir()
                 if os.isdir(installdir) then
-                    local installdir_failed = path.join(package:cachedir(), "installdir.failed")
-                    os.tryrm(installdir_failed)
+                    local installdir_failed = _get_installdir_failed(package)
                     if not os.isdir(installdir_failed) then
                         os.cp(installdir, installdir_failed)
                     end
@@ -403,16 +473,6 @@ function main(package)
         }
     }
 
-    -- clean the empty package directory
-    local installdir = package:installdir()
-    if os.emptydir(installdir) then
-        os.tryrm(installdir)
-    end
-
-    -- unlock this package
-    package:unlock()
-
-    -- leave source codes directory
-    os.cd(oldir)
+    _leave_workdir(package, oldir)
     return ok
 end

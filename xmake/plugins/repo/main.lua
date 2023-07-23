@@ -29,11 +29,15 @@ import("net.proxy")
 import("private.async.runjobs")
 import("private.action.require.impl.environment")
 
+function _clear_quick_search_cache(is_global)
+    if is_global then
+        import("private.xrepo.quick_search.cache")
+        cache.clear()
+    end
+end
+
 -- add repository url
 function _add(name, url, branch, is_global)
-
-    -- add url
-    repository.add(name, url, branch, is_global)
 
     -- remove previous repository if exists
     local repodir = path.join(repository.directory(is_global), name)
@@ -50,11 +54,17 @@ function _add(name, url, branch, is_global)
         git.clone(remoteurl, {verbose = option.get("verbose"), branch = branch, outputdir = repodir})
     end
 
+    -- add url
+    repository.add(name, url, branch, is_global)
+
     -- trace
     cprint("${color.success}add %s repository(%s): %s%s ok!", (is_global and "global" or "local"), name, url, branch and (" " .. branch) or "")
 
     -- leave environment
     environment.leave()
+
+    -- clear quick search cache
+    _clear_quick_search_cache(is_global)
 end
 
 -- remove repository url
@@ -69,8 +79,12 @@ function _remove(name, is_global)
         os.rmdir(repodir)
     end
 
+    -- clear quick search cache
+    _clear_quick_search_cache(is_global)
+
     -- trace
     cprint("${bright}remove %s repository(%s): ok!", (is_global and "global" or "local"), name)
+
 end
 
 -- update repositories
@@ -112,13 +126,16 @@ function _update()
                 pulled[repodir] = true
             end
         end
+
+        -- clear quick search cache
+        _clear_quick_search_cache(true)
     end
 
     -- pull repositories
     if option.get("verbose") then
         task()
     else
-        runjobs("update repo", task, {progress = true})
+        runjobs("update repo", task, {progress = true, isolate = true})
     end
 
     -- leave environment
@@ -139,6 +156,9 @@ function _clear(is_global)
     if os.isdir(repodir) then
         os.rmdir(repodir)
     end
+
+    -- clear quick search cache
+    _clear_quick_search_cache(is_global)
 
     -- trace
     cprint("${color.success}clear %s repositories: ok!", (is_global and "global" or "local"))

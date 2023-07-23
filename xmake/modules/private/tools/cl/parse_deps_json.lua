@@ -73,27 +73,66 @@ function _normailize_dep(dep, projectdir)
     if dep:startswith(projectdir) then
         return path.relative(dep, projectdir)
     else
-        -- we need also check header files outside project
+        -- we also need to check header files outside project
         -- https://github.com/xmake-io/xmake/issues/1154
         return dep
     end
 end
 
 -- parse depsfiles from string
+--
+--[[
+{
+    "Version": "1.2",
+    "Data": {
+        "Source": "c:\users\ruki\desktop\user_headerunit\src\main.cpp",
+        "ProvidedModule": "",
+        "Includes": [],
+        "ImportedModules": [
+            {
+                "Name": "hello",
+                "BMI": "c:\users\ruki\desktop\user_headerunit\src\hello.ifc"
+            }
+        ],
+        "ImportedHeaderUnits": [
+            {
+                "Header": "c:\users\ruki\desktop\user_headerunit\src\header.hpp",
+                "BMI": "c:\users\ruki\desktop\user_headerunit\src\header.hpp.ifc"
+            }
+        ]
+    }
+}]]
 function main(depsdata)
 
     -- decode json data first
     depsdata = json.decode(depsdata)
 
     -- get includes
-    local includes
-    if depsdata and depsdata.Data then
-        includes = depsdata.Data.Includes
+    local data
+    if depsdata then
+        data = depsdata.Data
+    end
+    if data then
+        includes = data.Includes
+        for _, item in ipairs(data.ImportedModules) do
+            local bmifile = item.BMI
+            if bmifile then
+                includes = includes or {}
+                table.insert(includes, bmifile)
+            end
+        end
+        for _, item in ipairs(data.ImportedHeaderUnits) do
+            local bmifile = item.BMI
+            if bmifile then
+                includes = includes or {}
+                table.insert(includes, bmifile)
+            end
+        end
     end
 
     -- translate it
     local results = hashset.new()
-    local projectdir = os.projectdir():lower() -- we need generate lower string, because json values are all lower
+    local projectdir = os.projectdir():lower() -- we need to generate lower string, because json values are all lower
     for _, includefile in ipairs(includes) do
         includefile = _normailize_dep(includefile, projectdir)
         if includefile then

@@ -206,7 +206,7 @@ function _add_batchjobs_for_target_and_deps(batchjobs, rootjob, jobrefs, target)
     end
 end
 
--- get batch jobs, @note we need export it for private.diagnosis.dump_buildjobs
+-- get batch jobs, @note we need to export it for private.diagnosis.dump_buildjobs
 function get_batchjobs(targetname, group_pattern)
 
     -- get root targets
@@ -217,12 +217,14 @@ function get_batchjobs(targetname, group_pattern)
         local depset = hashset.new()
         local targets = {}
         for _, target in pairs(project.targets()) do
-            local group = target:get("group")
-            if (target:is_default() and not group_pattern) or option.get("all") or (group_pattern and group and group:match(group_pattern)) then
-                for _, depname in ipairs(target:get("deps")) do
-                    depset:insert(depname)
+            if target:is_enabled() then
+                local group = target:get("group")
+                if (target:is_default() and not group_pattern) or option.get("all") or (group_pattern and group and group:match(group_pattern)) then
+                    for _, depname in ipairs(target:get("deps")) do
+                        depset:insert(depname)
+                    end
+                    table.insert(targets, target)
                 end
-                table.insert(targets, target)
             end
         end
         for _, target in pairs(targets) do

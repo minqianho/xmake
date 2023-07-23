@@ -84,11 +84,8 @@ function _import_packages(packages)
 
     -- do configure first
     local config_argv = {"f", "-c"}
-    if option.get("verbose") then
-        table.insert(config_argv, "-v")
-    end
     if option.get("diagnosis") then
-        table.insert(config_argv, "-D")
+        table.insert(config_argv, "-vD")
     end
     if option.get("plat") then
         table.insert(config_argv, "-p")
@@ -132,9 +129,9 @@ function _import_packages(packages)
     if mode == "debug" then
         extra.debug = true
     end
-    if kind == "shared" then
+    if kind then
         extra.configs = extra.configs or {}
-        extra.configs.shared = true
+        extra.configs.shared = kind == "shared"
     end
     local configs = option.get("configs")
     if configs then
@@ -176,12 +173,14 @@ function _import_current_packages(packages)
         require_argv.packagedir = packagedir
     end
     local extra = {system = false}
+    local mode = option.get("mode")
     if mode == "debug" then
         extra.debug = true
     end
-    if kind == "shared" then
+    local kind = option.get("kind")
+    if kind then
         extra.configs = extra.configs or {}
-        extra.configs.shared = true
+        extra.configs.shared = kind == "shared"
     end
     local configs = option.get("configs")
     if configs then

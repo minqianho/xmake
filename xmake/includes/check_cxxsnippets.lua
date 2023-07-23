@@ -28,7 +28,7 @@
 --
 function check_cxxsnippets(definition, snippets, opt)
     opt = opt or {}
-    local optname = "__" .. (opt.name or definition)
+    local optname = opt.name or ("__" .. definition)
     save_scope()
     option(optname)
         set_showmenu(false)
@@ -40,7 +40,7 @@ function check_cxxsnippets(definition, snippets, opt)
             add_links(opt.links)
         end
         if opt.includes then
-            add_cincludes(opt.includes)
+            add_cxxincludes(opt.includes)
         end
         if opt.languages then
             set_languages(opt.languages)
@@ -87,7 +87,7 @@ end
 --
 function configvar_check_cxxsnippets(definition, snippets, opt)
     opt = opt or {}
-    local optname = "__" .. (opt.name or definition)
+    local optname = opt.name or ("__" .. definition)
     local defname, defval = table.unpack(definition:split('='))
     save_scope()
     option(optname)
@@ -100,7 +100,7 @@ function configvar_check_cxxsnippets(definition, snippets, opt)
             add_links(opt.links)
         end
         if opt.includes then
-            add_cincludes(opt.includes)
+            add_cxxincludes(opt.includes)
         end
         if opt.languages then
             set_languages(opt.languages)

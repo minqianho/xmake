@@ -31,7 +31,7 @@ import("utils.progress")
 function init(self)
 
     -- init cuflags
-    if not is_plat("windows", "mingw") then
+    if not self:is_plat("windows", "mingw") then
         self:set("shared.cuflags", "-Xcompiler -fPIC")
         self:set("binary.cuflags", "-Xcompiler -fPIE")
     end
@@ -58,8 +58,8 @@ function nf_symbol(self, level, target)
     -- debug? generate *.pdb file
     local flags = nil
     if level == "debug" then
-        flags = {"-g", "-lineinfo"}
-        if is_plat("windows") then
+        flags = {"-G", "-g", "-lineinfo"}
+        if self:is_plat("windows") then
             local host_flags = nil
             local symbolfile = nil
             if target and target.symbolfile then
@@ -136,7 +136,7 @@ function nf_warning(self, level)
     -- for gcc/clang, or any gnu compatible compiler on *nix
     --
     local host_warning = nil
-    if is_plat("windows") then
+    if self:is_plat("windows") then
         host_warning = cl_maps[level]
     else
         host_warning = gcc_clang_maps[level]
@@ -166,6 +166,13 @@ function nf_optimize(self, level)
     end
 end
 
+-- make vs runtime flag
+function nf_runtime(self, vs_runtime)
+    if self:is_plat("windows") and vs_runtime then
+        return '-Xcompiler "-' .. vs_runtime .. '"'
+    end
+end
+
 -- make the language flag
 function nf_language(self, stdname)
 
@@ -177,7 +184,8 @@ function nf_language(self, stdname)
         ,   cxx11       = "--std c++11"
         ,   cxx14       = "--std c++14"
         ,   cxx17       = "--std c++17"
-        ,   cxxlatest   = {"--std c++17", "--std c++14", "--std c++11", "--std c++03"}
+        ,   cxx20       = "--std c++20"
+        ,   cxxlatest   = {"--std c++20", "--std c++17", "--std c++14", "--std c++11", "--std c++03"}
         }
         local cxxmaps2 = {}
         for k, v in pairs(_g.cxxmaps) do
@@ -201,7 +209,7 @@ end
 
 -- make the define flag
 function nf_define(self, macro)
-    return "-D" .. macro
+    return {"-D" .. macro}
 end
 
 -- make the undefine flag
@@ -221,7 +229,11 @@ end
 
 -- make the link flag
 function nf_link(self, lib)
-    return "-l" .. lib
+    if lib:endswith(".a") or lib:endswith(".so") or lib:endswith(".dylib") or lib:endswith(".lib") then
+        return lib
+    else
+        return "-l" .. lib
+    end
 end
 
 -- make the syslink flag
@@ -269,7 +281,7 @@ function linkargv(self, objectfiles, targetkind, targetfile, flags)
     end
 
     -- add `-Wl,--out-implib,outputdir/libxxx.a` for xxx.dll on mingw/gcc
-    if targetkind == "shared" and is_plat("mingw") then
+    if targetkind == "shared" and self:is_plat("mingw") then
         table.insert(flags_extra, "-Xlinker")
         table.insert(flags_extra, "-Wl,--out-implib," .. path.join(path.directory(targetfile), path.basename(targetfile) .. ".dll.a"))
     end
@@ -384,7 +396,7 @@ function compile(self, sourcefile, objectfile, dependinfo, flags)
                 local lines = errors:split("\n", {plain = true})
                 local start = 0
                 for index, line in ipairs(lines) do
-                    if line:find("error:", 1, true) or line:find("错误：", 1, true) or line:match("ptxas fatal%s*:") or line:match("error %a+[0-9]+%s*:") then
+                    if line:match("[eE]rror:", 1, true) or line:find("错误：", 1, true) or line:match("ptxas fatal%s*:") or line:match("error %a+[0-9]+%s*:") then
                         start = index
                         break
                     end

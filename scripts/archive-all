@@ -12,7 +12,7 @@ if [ -d $tmpdir ]; then
 fi
 mkdir $tmpdir
 
-# clone xmake repo 
+# clone xmake repo
 cp -r $xmakeroot $tmpdir/repo
 cd $tmpdir/repo
 git reset --hard HEAD
@@ -20,17 +20,23 @@ git clean -dfX
 git submodule foreach git clean -dfX
 
 # copy files to tmpdir/xmake
-mkdir -p $tmpdir/xmake/scripts
+version=`cat ./core/xmake.lua | grep -E "^set_version" | grep -oE "[0-9]*\.[0-9]*\.[0-9]*"`
+srcdir=$tmpdir/xmake
+topdir=$srcdir/xmake-$version
+mkdir -p $topdir/scripts
 cd $tmpdir/repo || exit
-cp -r ./core $tmpdir/xmake
-cp -r ./xmake $tmpdir/xmake/xmake
-cp ./scripts/*.sh $tmpdir/xmake/scripts
-cp -r ./scripts/man $tmpdir/xmake/scripts
-cp -r ./scripts/debian $tmpdir/xmake/scripts
-cp ./*.md $tmpdir/xmake
-cp makefile $tmpdir/xmake
-cd $tmpdir/xmake || exit
-rm -rf ./core/src/tbox/tbox/src/demo
+cp -r ./core $topdir
+cp -r ./xmake $topdir/xmake
+cp ./scripts/*.sh $topdir/scripts
+cp -r ./scripts/man $topdir/scripts
+cp -r ./scripts/debian $topdir/scripts
+cp -r ./scripts/msys $topdir/scripts
+cp ./*.md $topdir
+cp configure $topdir
+rm -rf $topdir/core/src/tbox/tbox/src/demo
+rm -rf $topdir/core/src/luajit
+rm -rf $topdir/core/src/pdcurses
+cd $srcdir || exit
 
 # archive files
 outputfile=$artifactsdir/"xmake"
@@ -43,9 +49,10 @@ fi
 if [ -f "$outputfile.tar.gz" ]; then
     rm "$outputfile.tar.gz"
 fi
-zip -qr "$outputfile.zip" .
+zip -qr -9 "$outputfile.zip" .
 7z a "$outputfile.7z" .
-tar -czf "$outputfile.tar.gz" .
+#tar -czf "$outputfile.tar.gz" *
+tar -cvf - * | gzip -9 - > "$outputfile.tar.gz"
 shasum -a 256 "$outputfile.zip"
 shasum -a 256 "$outputfile.7z"
 shasum -a 256 "$outputfile.tar.gz"

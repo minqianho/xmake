@@ -209,8 +209,7 @@ function _instance:_do_check_features()
 
         -- all features are supported?
         features = table.wrap(features)
-        local features_supported = self._core_tool_compiler.has_features(features, {target = self})
-        if features_supported and #features_supported == #features then
+        if self._core_tool_compiler.has_features(features, {target = self}) then
             passed = 1
         end
 
@@ -437,6 +436,11 @@ end
 -- get the extra configuration
 function _instance:extraconf(name, item, key)
     return self._INFO:extraconf(name, item, key)
+end
+
+-- get configuration source information of the given api item
+function _instance:sourceinfo(name, item)
+    return self._INFO:sourceinfo(name, item)
 end
 
 -- get the given dependent option

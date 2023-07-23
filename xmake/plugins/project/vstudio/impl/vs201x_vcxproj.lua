@@ -168,8 +168,6 @@ function _make_compflags(sourcefile, targetinfo, vcxprojdir)
     -- translate path for -Idir or /Idir
     local flags = {}
     for _, flag in ipairs(targetinfo.compflags[sourcefile]) do
-
-        -- handle external includes as well
         for _, pattern in ipairs({"[%-/](I)(.*)", "[%-/](external:I)(.*)"}) do
 
             -- -Idir or /Idir
@@ -178,16 +176,12 @@ function _make_compflags(sourcefile, targetinfo, vcxprojdir)
                 return "/" .. flag .. dir
             end)
         end
-
-        -- save flag
         table.insert(flags, flag)
     end
 
     -- add -D__config_$(mode)__ and -D__config_$(arch)__ for the config header
     table.insert(flags, "-D__config_" .. targetinfo.mode .. "__")
     table.insert(flags, "-D__config_" .. targetinfo.arch .. "__")
-
-    -- ok?
     return flags
 end
 
@@ -220,8 +214,6 @@ end
 
 -- make header
 function _make_header(vcxprojfile, vsinfo)
-
-    -- make header
     vcxprojfile:print("<?xml version=\"1.0\" encoding=\"utf-8\"?>")
     vcxprojfile:enter("<Project DefaultTargets=\"Build\" ToolsVersion=\"%s.0\" xmlns=\"http://schemas.microsoft.com/developer/msbuild/2003\">", assert(vsinfo.project_version))
 end
@@ -408,7 +400,7 @@ function _make_source_options_cl(vcxprojfile, flags, condition)
     end
 
     -- make ExternalTemplatesDiagnostics
-    if flagstr:find("[%-/]external:templates-") then
+    if flagstr:find("[%-/]external:templates%-") then
         vcxprojfile:print("<ExternalTemplatesDiagnostics%s>true</ExternalTemplatesDiagnostics>", condition)
     else
         vcxprojfile:print("<ExternalTemplatesDiagnostics%s>false</ExternalTemplatesDiagnostics>", condition)
@@ -457,8 +449,15 @@ function _make_source_options_cl(vcxprojfile, flags, condition)
         vcxprojfile:print("<RuntimeLibrary%s>MultiThreaded</RuntimeLibrary>", condition)
     end
 
+    -- make RuntimeTypeInfo
+    if flagstr:find("[%-/]GR%-") then
+        vcxprojfile:print("<RuntimeTypeInfo%s>false</RuntimeTypeInfo>", condition)
+    elseif flagstr:find("[%-/]GR") then
+        vcxprojfile:print("<RuntimeTypeInfo%s>true</RuntimeTypeInfo>", condition)
+    end
+
     -- handle multi processor compilation
-    if flagstr:find("[%-/]Gm-") or not flagstr:find("[%-/]Gm") then
+    if flagstr:find("[%-/]Gm%-") or not flagstr:find("[%-/]Gm") then
         vcxprojfile:print("<MinimalRebuild%s>false</MinimalRebuild>", condition)
         if not flagstr:find("[%-/]MP1") then
             vcxprojfile:print("<MultiProcessorCompilation%s>true</MultiProcessorCompilation>", condition)
@@ -484,7 +483,7 @@ function _make_source_options_cl(vcxprojfile, flags, condition)
     -- make AdditionalOptions
     local excludes = {
         "Od", "Os", "O0", "O1", "O2", "Ot", "Ox", "W0", "W1", "W2", "W3", "W4", "WX", "Wall", "Zi", "ZI", "Z7", "MT", "MTd", "MD", "MDd", "TP",
-        "Fd", "fp", "I", "D", "Gm-", "Gm", "MP", "external:W0", "external:W1", "external:W2", "external:W3", "external:W4", "external:templates-?", "external:I",
+        "Fd", "fp", "I", "D", "Gm%-", "Gm", "GR%-", "GR", "MP", "external:W0", "external:W1", "external:W2", "external:W3", "external:W4", "external:templates%-?", "external:I",
         "std:c11", "std:c17", "std:c%+%+11", "std:c%+%+14", "std:c%+%+17", "std:c%+%+20", "std:c%+%+latest", "nologo", "wd(%d+)"
     }
     local additional_flags = _exclude_flags(flags, excludes)
@@ -550,7 +549,7 @@ function _make_source_options_cuda(vcxprojfile, flags, opt)
 
         -- make Warning
         if flagstr:find("[%-/]W[1234]") then
-            local wlevel = flagstr:find("[%-/](W[1234])")
+            local wlevel = flagstr:match("[%-/](W[1234])")
             vcxprojfile:print("<Warning%s>%s</Warning>", condition, wlevel)
         elseif flagstr:find("[%-/]Wall") then
             vcxprojfile:print("<Warning%s>Wall</Warning>", condition)
@@ -1115,7 +1114,7 @@ function _make_source_file_forall(vcxprojfile, vsinfo, target, sourcefile, sourc
         -- for *.c/cpp/cu files
         else
 
-            -- we need use different object directory and allow parallel building
+            -- we need to use different object directory and allow parallel building
             --
             -- @see https://github.com/xmake-io/xmake/issues/2016
             -- https://github.com/xmake-io/xmake/issues/1062
@@ -1247,7 +1246,7 @@ function _make_source_file_forspec(vcxprojfile, vsinfo, target, sourcefile, sour
 
         -- for *.c/cpp/cu files
         else
-           -- we need use different object directory and allow parallel building
+           -- we need to use different object directory and allow parallel building
             --
             -- @see https://github.com/xmake-io/xmake/issues/2016
             -- https://github.com/xmake-io/xmake/issues/1062
@@ -1331,7 +1330,7 @@ function _make_source_files(vcxprojfile, vsinfo, target)
         end
 
         -- make source files
-        for sourcefile, sourceinfo in pairs(sourceinfos) do
+        for sourcefile, sourceinfo in table.orderpairs(sourceinfos) do
             if #sourceinfo == #target.info then
                 _make_source_file_forall(vcxprojfile, vsinfo, target, sourcefile, sourceinfo)
             else
@@ -1348,7 +1347,7 @@ function _make_source_files(vcxprojfile, vsinfo, target)
     local pcheader = target.pcxxheader or target.pcheader
     vcxprojfile:enter("<ItemGroup>")
         for _, includefile in ipairs(target.headerfiles) do
-            -- we need ignore pcheader file to fix https://github.com/xmake-io/xmake/issues/1171
+            -- we need to ignore pcheader file to fix https://github.com/xmake-io/xmake/issues/1171
             if not pcheader or includefile ~= pcheader then
                 _make_header_file(vcxprojfile, includefile, target.project_dir)
             end

@@ -20,6 +20,7 @@
 
 -- imports
 import("core.base.option")
+import("core.base.global")
 import("core.base.tty")
 import("core.base.hashset")
 import("core.project.config")
@@ -27,14 +28,15 @@ import("core.package.package", {alias = "core_package"})
 import("lib.detect.find_file")
 import("lib.detect.find_directory")
 import("private.action.require.impl.utils.filter")
-import("private.action.require.impl..utils.url_filename")
+import("private.action.require.impl.utils.url_filename")
 import("net.http")
 import("net.proxy")
 import("devel.git")
 import("utils.archive")
 
 -- checkout codes from git
-function _checkout(package, url, sourcedir, url_alias)
+function _checkout(package, url, sourcedir, opt)
+    opt = opt or {}
 
     -- use previous source directory if exists
     local packagedir = path.join(sourcedir, package:name())
@@ -55,7 +57,15 @@ function _checkout(package, url, sourcedir, url_alias)
     end
 
     -- we can use local package from the search directories directly if network is too slow
-    local localdir = find_directory(package:name() .. archive.extension(url), core_package.searchdirs())
+    local localdir
+    local searchnames = {package:name() .. archive.extension(url),
+                         path.basename(url_filename(url))}
+    for _, searchname in ipairs(searchnames) do
+        localdir = find_directory(searchname, core_package.searchdirs())
+        if localdir then
+            break
+        end
+    end
     if localdir and os.isdir(path.join(localdir, ".git")) then
         git.clean({repodir = localdir, force = true, all = true})
         git.reset({repodir = localdir, hard = true})
@@ -71,15 +81,22 @@ function _checkout(package, url, sourcedir, url_alias)
     -- remove temporary directory
     os.rm(sourcedir .. ".tmp")
 
-    -- we need enable longpaths on windows
+    -- we need to enable longpaths on windows
     local longpaths = package:policy("platform.longpaths")
 
     -- download package from branches?
     packagedir = path.join(sourcedir .. ".tmp", package:name())
-    if package:branch() then
+    local branch = package:branch()
+    if branch then
+
+        -- we need to select the correct default branch
+        -- @see https://github.com/xmake-io/xmake/issues/3248
+        if branch == "@default" then
+            branch = nil
+        end
 
         -- only shadow clone this branch
-        git.clone(url, {depth = 1, recursive = true, longpaths = longpaths, branch = package:branch(), outputdir = packagedir})
+        git.clone(url, {depth = 1, recursive = true, longpaths = longpaths, branch = branch, outputdir = packagedir})
 
     -- download package from revision or tag?
     else
@@ -88,7 +105,7 @@ function _checkout(package, url, sourcedir, url_alias)
         git.clone(url, {longpaths = longpaths, outputdir = packagedir})
 
         -- attempt to checkout the given version
-        local revision = package:revision(url_alias) or package:tag() or package:commit() or package:version_str()
+        local revision = package:revision(opt.url_alias) or package:tag() or package:commit() or package:version_str()
         git.checkout(revision, {repodir = packagedir})
 
         -- update all submodules
@@ -107,18 +124,19 @@ function _checkout(package, url, sourcedir, url_alias)
 end
 
 -- download codes from ftp/http/https
-function _download(package, url, sourcedir, url_alias, url_excludes)
+function _download(package, url, sourcedir, opt)
+    opt = opt or {}
 
     -- get package file
     local packagefile = url_filename(url)
 
     -- get sourcehash from the given url
     --
-    -- we need not sourcehash and skip checksum to try download it directly if no version list in package()
+    -- we don't need sourcehash and skip checksum to try download it directly if no version list in package()
     -- @see https://github.com/xmake-io/xmake/issues/930
     -- https://github.com/xmake-io/xmake/issues/1009
     --
-    local sourcehash = package:sourcehash(url_alias)
+    local sourcehash = package:sourcehash(opt.url_alias)
     assert(not package:is_verify() or not package:get("versions") or sourcehash, "cannot get source hash of %s in package(%s)", url, package:name())
 
     -- the package file have been downloaded?
@@ -138,6 +156,13 @@ function _download(package, url, sourcedir, url_alias, url_excludes)
             local localfile
             local searchnames = {package:name() .. "-" .. package:version_str() .. archive.extension(url),
                                  packagefile}
+
+            -- match github name mangling https://github.com/xmake-io/xmake/issues/1343
+            local github_name = url_filename.github_filename(url)
+            if github_name then
+                table.insert(searchnames, github_name)
+            end
+
             for _, searchname in ipairs(searchnames) do
                 localfile = find_file(searchname, core_package.searchdirs())
                 if localfile then
@@ -148,13 +173,18 @@ function _download(package, url, sourcedir, url_alias, url_excludes)
                 -- we can use local package from the search directories directly if network is too slow
                 os.cp(localfile, packagefile)
             else
-                http.download(url, packagefile)
+                http.download(url, packagefile, {
+                    insecure = global.get("insecure-ssl"),
+                    headers = opt.url_http_headers or package:policy("package.download.http_headers")})
             end
         end
 
         -- check hash
         if sourcehash and sourcehash ~= hash.sha256(packagefile) then
-            raise("unmatched checksum!")
+            if package:is_precompiled() then
+                wprint("perhaps the local binary repository is not up to date, please run `xrepo update-repo` to update it and try again!")
+            end
+            raise("unmatched checksum, current hash(%s) != original hash(%s)", hash.sha256(packagefile):sub(1, 8), sourcehash:sub(1, 8))
         end
     end
 
@@ -162,25 +192,27 @@ function _download(package, url, sourcedir, url_alias, url_excludes)
     local sourcedir_tmp = sourcedir .. ".tmp"
     os.rm(sourcedir_tmp)
     local extension = archive.extension(packagefile)
-    if archive.extract(packagefile, sourcedir_tmp, {excludes = url_excludes}) then
+    if archive.extract(packagefile, sourcedir_tmp, {excludes = opt.url_excludes}) then
         -- move to source directory and we skip it to avoid long path issues on windows if only one root directory
         os.rm(sourcedir)
         local filedirs = os.filedirs(path.join(sourcedir_tmp, "*"))
         if #filedirs == 1 and os.isdir(filedirs[1]) then
             os.mv(filedirs[1], sourcedir)
-            -- we need anchor it to avoid expand it when installing package
+            -- we need to anchor it to avoid expand it when installing package
             io.writefile(path.join(sourcedir, "__sourceroot_anchor__.txt"), "")
             os.rm(sourcedir_tmp)
         else
             os.mv(sourcedir_tmp, sourcedir)
         end
+        -- mark this sourcedir as cleanable
+        package:data_set("cleanable_sourcedir", path.absolute(sourcedir))
     elseif extension and extension ~= "" then
         -- create an empty source directory if do not extract package file
         os.tryrm(sourcedir)
         os.mkdir(sourcedir)
         raise("cannot extract %s, maybe missing extractor or invalid package file!", packagefile)
     else
-        -- if it is not archive file, we need only create empty source file and use package:originfile()
+        -- if it is not archive file, we only need to create empty source file and use package:originfile()
         os.tryrm(sourcedir)
         os.mkdir(sourcedir)
     end
@@ -193,6 +225,17 @@ function _download(package, url, sourcedir, url_alias, url_excludes)
     if not cached then
         cprint("${yellow}  => ${clear}download %s .. ${color.success}${text.success}", url)
     end
+end
+
+-- download codes from script
+function _download_from_script(package, script, opt)
+
+    -- do download
+    script(package, opt)
+
+    -- trace
+    tty.erase_line_to_start().cr()
+    cprint("${yellow}  => ${clear}download %s .. ${color.success}${text.success}", opt.url)
 end
 
 -- get sorted urls
@@ -237,12 +280,9 @@ function main(package)
     local ok = false
     local urls_failed = {}
     for idx, url in ipairs(urls) do
-
-        -- get url alias
         local url_alias = package:url_alias(url)
-
-        -- get url excludes
         local url_excludes = package:url_excludes(url)
+        local url_http_headers = package:url_http_headers(url)
 
         -- filter url
         url = filter.handle(url, package)
@@ -270,11 +310,19 @@ function main(package)
                 local sourcedir = "source"
                 local script = package:script("download")
                 if script then
-                    script(package, {sourcedir = sourcedir, url = url, url_alias = url_alias, url_excludes = url_excludes})
+                    _download_from_script(package, script, {
+                        sourcedir = sourcedir,
+                        url = url,
+                        url_alias = url_alias,
+                        url_excludes = url_excludes})
                 elseif git.checkurl(url) then
-                    _checkout(package, url, sourcedir, url_alias)
+                    _checkout(package, url, sourcedir, {
+                        url_alias = url_alias})
                 else
-                    _download(package, url, sourcedir, url_alias, url_excludes)
+                    _download(package, url, sourcedir, {
+                        url_alias = url_alias,
+                        url_excludes = url_excludes,
+                    url_http_headers = url_http_headers})
                 end
                 return true
             end,
@@ -308,7 +356,16 @@ function main(package)
                             local searchnames = hashset.new()
                             for _, url_failed in ipairs(urls_failed) do
                                 cprint("  ${yellow}- %s", url_failed)
-                                searchnames:insert(url_filename(url_failed))
+                                if git.checkurl(url_failed) then
+                                    searchnames:insert(package:name() .. archive.extension(url_failed))
+                                    searchnames:insert(path.basename(url_filename(url_failed)))
+                                else
+                                    local extension = archive.extension(url_failed)
+                                    if extension then
+                                        searchnames:insert(package:name() .. "-" .. package:version_str() .. extension)
+                                    end
+                                    searchnames:insert(url_filename(url_failed))
+                                end
                             end
                             cprint("to the local search directories: ${bright}%s", table.concat(table.wrap(core_package.searchdirs()), path.envsep()))
                             cprint("  ${bright}- %s", table.concat(searchnames:to_array(), ", "))

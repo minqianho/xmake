@@ -28,6 +28,12 @@ rule("c++.build")
     add_deps("c++.build.pcheader", "c++.build.optimization")
     add_deps("c++.build.modules", {order = true})
     on_build_files("private.action.build.object", {batch = true, distcc = true})
+    on_config(function (target)
+        -- we enable c++ exceptions by default
+        if target:is_plat("windows") and not target:get("exceptions") then
+            target:set("exceptions", "cxx")
+        end
+    end)
 
 rule("c++")
 
@@ -46,12 +52,6 @@ rule("c++")
     -- we attempt to extract symbols to the independent file and
     -- strip self-target binary if `set_symbols("debug")` and `set_strip("all")` are enabled
     add_deps("utils.symbols.extract")
-
-    -- check targets
-    add_deps("utils.check.targets")
-
-    -- check licenses
-    add_deps("utils.check.licenses")
 
     -- add platform rules
     add_deps("platform.wasm")
